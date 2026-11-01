@@ -78,6 +78,7 @@ La herramienta se ejecuta **en segundo plano**: devuelve un `runId` de inmediato
 |---|---|
 | `aiapaec_orchestrate` | Ejecuta un plan de subtareas en subagentes (segundo plano, devuelve `runId`). |
 | `aiapaec_run_status` | Consulta el estado de un run por `runId` (o lista los recientes) con reportes consolidados. |
+| `aiapaec_run_abort` | Cancela un run en curso: interrumpe las sesiones hijas y las tareas pendientes quedan `skipped`. |
 | `gentle_engram_status` | Diagnóstico de Engram (3 estados). |
 
 ### Comando
@@ -242,7 +243,8 @@ Cada orquestación se guarda en el storage del plugin (`runs/<runId>`) con objet
 ## Desarrollo
 
 ```bash
-npm test             # typecheck + pruebas (node:test)
+npm test             # lint (Biome) + typecheck + pruebas (node:test)
+npm run lint         # solo Biome
 npm run agents:sync  # regenera config/agents.json desde src/agents.ts
 npm run agents:install  # además fusiona los agentes en ~/.config/opencode/opencode.json
 ```
