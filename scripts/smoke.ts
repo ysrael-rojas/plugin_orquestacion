@@ -6,6 +6,7 @@ import { detectEngram } from "../src/engram"
 import { getRun, recentRuns, saveRun } from "../src/history"
 import { buildSessionPermissions } from "../src/permissions"
 import { runOrchestration, planWaves } from "../src/runner"
+import { registerTools } from "../src/tools"
 import type { PluginCtx, TaskSpec } from "../src/types"
 
 function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string[] } = {}): PluginCtx {
@@ -15,6 +16,7 @@ function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string
   const worktreesCreated: any[] = []
   const worktreesRemoved: any[] = []
   const permissionAsserts: any[] = []
+  const interrupts: any[] = []
   const sessions = new Map<string, { input: any; prompt?: string; messages: any[] }>()
   const storage = new Map<string, any>()
 
@@ -78,6 +80,10 @@ function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string
         ]
       },
       async update() {},
+      async interrupt(input?: any) {
+        interrupts.push(input ?? {})
+        return undefined
+      },
       async remove({ sessionID }: any) {
         sessions.delete(sessionID)
       },
@@ -109,6 +115,7 @@ function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string
   ;(ctx as any).__created = created
   ;(ctx as any).__prompts = prompts
   ;(ctx as any).__permissions = permissionAsserts
+  ;(ctx as any).__interrupts = interrupts
   ;(ctx as any).__worktrees = { created: worktreesCreated, removed: worktreesRemoved }
   return ctx
 }
@@ -542,6 +549,167 @@ test("permisos: git_commit, strict_scope y globs", () => {
     rules.some((rule) => rule.action === "bash" && rule.resource === "*" && rule.effect === "deny"),
     "strict_scope sin bash habilitado debe denegar shell",
   )
+})
+
+function makeToolCtx(options: { fail?: string[]; delayMs?: number; noReport?: string[] } = {}) {
+  const ctx = makeCtx(options)
+  const tools = new Map<string, any>()
+  ctx.tool.transform = async (callback: any) => {
+    callback({
+      namespace() {},
+      add(definition: any) {
+        tools.set(definition.name, definition)
+      },
+    })
+    return { dispose: async () => {} }
+  }
+  return { ctx, tools }
+}
+
+const TOOL_SETTINGS = {
+  baseBranch: "dev",
+  cleanupSessions: false,
+  cleanupWorktrees: false,
+  workdir: "C:/repo",
+}
+
+async function waitForRun(ctx: PluginCtx, runId: string, timeoutMs = 3000) {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    const record = await getRun(ctx, runId)
+    if (record && record.status !== "running") return record
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error(`el run ${runId} no terminó a tiempo`)
+}
+
+test("tools: orchestrate valida agentes, plan y runId duplicado", async () => {
+  const { ctx, tools } = makeToolCtx()
+  await registerTools(ctx, TOOL_SETTINGS)
+  const orchestrate = tools.get("orchestrate")!
+
+  const unknown = await orchestrate.execute(
+    { objective: "x", tasks: [{ id: "A", agent: "nope", objective: "x" }] },
+    { sessionID: "ses_orq" },
+  )
+  assert.match(String(unknown.content), /Faltan agentes/)
+
+  const invalid = await orchestrate.execute(
+    {
+      objective: "x",
+      tasks: [
+        { id: "A", agent: "contexto", objective: "x" },
+        { id: "A", agent: "qa", objective: "y" },
+      ],
+    },
+    { sessionID: "ses_orq" },
+  )
+  assert.match(String(invalid.content), /plan tiene errores/)
+
+  await saveRun(ctx, {
+    runId: "RUN-DUP",
+    objective: "x",
+    baseBranch: "dev",
+    startedAt: new Date().toISOString(),
+    status: "completed",
+    totalTasks: 0,
+    results: [],
+  })
+  const duplicate = await orchestrate.execute(
+    { objective: "x", runId: "RUN-DUP", tasks: [{ id: "A", agent: "contexto", objective: "x" }] },
+    { sessionID: "ses_orq" },
+  )
+  assert.match(String(duplicate.content), /Ya existe un run/)
+})
+
+test("tools: orchestrate en segundo plano y run_status lo encuentra", async () => {
+  const { ctx, tools } = makeToolCtx()
+  await registerTools(ctx, TOOL_SETTINGS)
+  const orchestrate = tools.get("orchestrate")!
+  const runStatus = tools.get("run_status")!
+
+  const started = await orchestrate.execute(
+    { objective: "bg", runId: "RUN-TOOL-1", tasks: [{ id: "T1", agent: "contexto", objective: "x" }] },
+    { sessionID: "ses_orq" },
+  )
+  assert.match(String(started.content), /RUN-TOOL-1/)
+  assert.equal(started.metadata.status, "running")
+
+  const record = await waitForRun(ctx, "RUN-TOOL-1")
+  assert.equal(record.status, "completed")
+  assert.equal(record.runId, "RUN-TOOL-1")
+
+  const status = await runStatus.execute({ runId: "RUN-TOOL-1" })
+  assert.match(String(status.content), /RUN-TOOL-1/)
+  assert.match(String(status.content), /T1/)
+
+  const missing = await runStatus.execute({ runId: "RUN-NOPE" })
+  assert.match(String(missing.content), /No existe/)
+})
+
+test("tools: run_abort interrumpe un run activo y lo marca aborted", async () => {
+  const { ctx, tools } = makeToolCtx({ delayMs: 150 })
+  await registerTools(ctx, TOOL_SETTINGS)
+  const orchestrate = tools.get("orchestrate")!
+  const abort = tools.get("run_abort")!
+
+  await orchestrate.execute(
+    { objective: "abort", runId: "RUN-TOOL-2", tasks: [{ id: "A1", agent: "contexto", objective: "x" }] },
+    { sessionID: "ses_orq" },
+  )
+
+  const response = await abort.execute({ runId: "RUN-TOOL-2" })
+  assert.match(String(response.content), /Abort solicitado/)
+
+  const record = await waitForRun(ctx, "RUN-TOOL-2")
+  assert.equal(record.status, "aborted")
+
+  const missing = await abort.execute({ runId: "RUN-NOPE-2" })
+  assert.match(String(missing.content), /No existe/)
+})
+
+test("tools: fallo de storage inicial impide arrancar el run", async () => {
+  const { ctx, tools } = makeToolCtx()
+  await registerTools(ctx, TOOL_SETTINGS)
+  const orchestrate = tools.get("orchestrate")!
+
+  const originalSet = ctx.storage.set.bind(ctx.storage)
+  let calls = 0
+  ctx.storage.set = async (key: string, value: any) => {
+    calls++
+    if (calls === 1) throw new Error("storage caído")
+    return originalSet(key, value)
+  }
+
+  const response = await orchestrate.execute(
+    { objective: "x", runId: "RUN-TOOL-3", tasks: [{ id: "T1", agent: "contexto", objective: "x" }] },
+    { sessionID: "ses_orq" },
+  )
+  assert.match(String(response.content), /No se pudo inicializar el run/)
+})
+
+test("tools: fallo al listar agentes no finge que faltan", async () => {
+  const { ctx, tools } = makeToolCtx()
+  ctx.agent.list = async () => {
+    throw new Error("boom")
+  }
+  await registerTools(ctx, TOOL_SETTINGS)
+  const orchestrate = tools.get("orchestrate")!
+
+  const response = await orchestrate.execute(
+    { objective: "x", tasks: [{ id: "A", agent: "contexto", objective: "x" }] },
+    { sessionID: "ses_orq" },
+  )
+  assert.match(String(response.content), /No se pudo listar los agentes/)
+})
+
+test("tools: engram_status reporta ausencia con guía", async () => {
+  const { ctx, tools } = makeToolCtx()
+  await registerTools(ctx, TOOL_SETTINGS)
+  const engram = tools.get("engram_status")!
+
+  const response = await engram.execute({})
+  assert.match(String(response.content), /NO está registrado/)
 })
 
 test("historial: guardar, recuperar y listar runs", async () => {

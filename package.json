@@ -1,6 +1,6 @@
 {
   "name": "plugin-de-orquestacion-para-opencode",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Plugin de orquestación de agentes y subagentes para OpenCode (arquitectura Aiapaec)",
   "type": "module",
   "exports": {
