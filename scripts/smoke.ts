@@ -7,6 +7,7 @@ import { detectEngram } from "../src/engram"
 import { getRun, pruneRuns, recentRuns, saveRun } from "../src/history"
 import { buildSessionPermissions } from "../src/permissions"
 import { runOrchestration, planWaves } from "../src/runner"
+import plugin from "../src/index"
 import { registerTools } from "../src/tools"
 import { registerSkills } from "../src/skills"
 import type { PluginCtx, TaskSpec } from "../src/types"
@@ -871,4 +872,44 @@ test("skills: option skills:false no registra nada", async () => {
 
   await registerSkills(ctx, { enabled: false, workdir: process.cwd() })
   assert.equal(called, false, "no debe llamar a ctx.skill.transform cuando skills:false")
+})
+
+test("skills: degradación graceful cuando ctx.skill no existe", async () => {
+  const commands: any[] = []
+  const tools: any[] = []
+  const warnings: string[] = []
+
+  const ctx = makeCtx()
+  ctx.command.transform = async (callback: any) => {
+    callback({ add: (command: any) => commands.push(command) })
+    return { dispose: async () => {} }
+  }
+  ctx.tool.transform = async (callback: any) => {
+    callback({
+      namespace() {},
+      add: (tool: any) => tools.push(tool),
+    })
+    return { dispose: async () => {} }
+  }
+
+  const originalWarn = console.warn
+  console.warn = (...args: any[]) => {
+    warnings.push(args.join(" "))
+  }
+
+  let dispose: unknown
+  try {
+    const setup = (plugin as { setup: (context: PluginCtx) => Promise<() => Promise<void>> }).setup
+    dispose = await setup(ctx)
+  } finally {
+    console.warn = originalWarn
+  }
+
+  assert.equal(typeof dispose, "function", "el setup debe completarse y devolver cleanup")
+  assert.ok(commands.length >= 2, "debe registrar los comandos del plugin")
+  assert.ok(tools.length >= 1, "debe registrar las tools del plugin")
+  assert.ok(
+    warnings.some((warning) => warning.includes("ctx.skill.transform no está disponible")),
+    "debe advertir la degradación cuando ctx.skill falta",
+  )
 })
