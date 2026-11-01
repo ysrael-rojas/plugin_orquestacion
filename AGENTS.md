@@ -48,4 +48,4 @@ Plugin TypeScript ESM para OpenCode V2 (arquitectura "Aiapaec"). OpenCode carga 
 ## Configuración del plugin
 
 - Opciones: `baseBranch` (default `dev`), `cleanupSessions` (default `false`).
-- Se carga desde `opencode.json` global: `plugins: ["C:/Users/Lenovo/Desktop/proyectos-dev/plugin_orquestacion"]` + bloque `agents`.
+- Se carga desde `opencode.json` global: `plugins: ["C:/dev/plugin_orquestacion"]` + bloque `agents`.

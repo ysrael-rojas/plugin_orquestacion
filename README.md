@@ -18,7 +18,7 @@ En tu `opencode.json` global (`~/.config/opencode/opencode.json` en Windows tamb
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugins": ["C:/Users/Lenovo/Desktop/proyectos-dev/plugin_orquestacion"]
+  "plugins": ["C:/dev/plugin_orquestacion"]
 }
 ```
 
@@ -28,7 +28,7 @@ También acepta forma con opciones:
 {
   "plugins": [
     {
-      "package": "C:/Users/Lenovo/Desktop/proyectos-dev/plugin_orquestacion",
+      "package": "C:/dev/plugin_orquestacion",
       "options": {
         "baseBranch": "dev",
         "cleanupSessions": false
