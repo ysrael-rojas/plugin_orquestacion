@@ -2,6 +2,7 @@ import { Plugin } from "@opencode/plugin"
 
 import { AGENTS } from "./agents"
 import { detectEngram, formatEngramStatus } from "./engram"
+import { sanitizePlanDocsFolder } from "./plandocs"
 import { registerTools } from "./tools"
 import { registerSkills } from "./skills"
 import type { PluginCtx, PluginOptions } from "./types"
@@ -48,6 +49,14 @@ export default Plugin.define({
         ? Math.floor(rawRunHistory)
         : 50
 
+    const rawPlanDocs = (options as PluginOptions).planDocs
+    const planDocs: string | false =
+      rawPlanDocs === false
+        ? false
+        : typeof rawPlanDocs === "string"
+          ? sanitizePlanDocsFolder(rawPlanDocs)
+          : "docs/plans"
+
     const workdir = ctx.location?.directory ?? process.cwd()
 
     const tools = await registerTools(ctx, {
@@ -57,6 +66,7 @@ export default Plugin.define({
       taskTimeoutMs,
       worktreeParent,
       runHistory,
+      planDocs,
       workdir,
     })
 
