@@ -33,6 +33,8 @@ export interface RunnerOptions {
   control?: RunControl
   /** Timeout por tarea en ms (0/undefined = sin límite). */
   taskTimeoutMs?: number
+  /** Se invoca al iniciar cada tarea (para mostrar tareas en curso). */
+  onTaskStart?: (info: { taskId: string; agent: string; branch: string }) => void | Promise<void>
 }
 
 export interface OrchestrationResult {
@@ -147,6 +149,7 @@ export async function runOrchestration(options: RunnerOptions): Promise<Orchestr
           worktreeParent,
           control: options.control,
           taskTimeoutMs: options.taskTimeoutMs,
+          onTaskStart: options.onTaskStart,
           upstream: (task.dependsOn ?? [])
             .map((dep) => byId.get(dep))
             .filter((entry): entry is TaskResult => Boolean(entry))
@@ -224,6 +227,7 @@ interface TaskRunOptions {
   upstream?: Array<{ taskId: string; worktreeDirectory?: string; branch?: string }>
   control?: RunControl
   taskTimeoutMs?: number
+  onTaskStart?: (info: { taskId: string; agent: string; branch: string }) => void | Promise<void>
 }
 
 async function executeTask(
@@ -315,6 +319,12 @@ async function executeTask(
 
     sessionID = created.id
     options.control?.sessions.add(sessionID)
+
+    try {
+      await options.onTaskStart?.({ taskId: task.id, agent: task.agent, branch })
+    } catch {
+      // El avance es informativo.
+    }
 
     if (options.control?.aborted) {
       try {

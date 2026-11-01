@@ -204,6 +204,9 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
         const control: RunControl = { aborted: false, sessions: new Set() }
         activeRuns.set(runId, control)
 
+        const inFlight: string[] = []
+        let latestResults: readonly TaskResult[] = []
+
         const base: RunRecord = {
           runId,
           objective: payload.objective,
@@ -211,6 +214,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           startedAt,
           status: "running",
           totalTasks: payload.tasks.length,
+          inFlight: [],
           results: [],
         }
 
@@ -240,8 +244,19 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           taskTimeoutMs: settings.taskTimeoutMs,
           control,
           onUpdate: async ({ results }) => {
+            latestResults = [...results]
+            const finished = new Set(results.map((entry) => entry.taskId))
+            const pending = inFlight.filter((id) => !finished.has(id))
             try {
-              await saveRun(ctx, { ...base, results: [...results] })
+              await saveRun(ctx, { ...base, results: [...results], inFlight: pending })
+            } catch {
+              // best-effort
+            }
+          },
+          onTaskStart: async ({ taskId }) => {
+            if (!inFlight.includes(taskId)) inFlight.push(taskId)
+            try {
+              await saveRun(ctx, { ...base, results: [...latestResults], inFlight: [...inFlight] })
             } catch {
               // best-effort
             }
@@ -575,6 +590,10 @@ function formatRunRecord(record: RunRecord): string {
   }
 
   if (record.status === "running") {
+    const running = record.inFlight ?? []
+    if (running.length > 0) {
+      lines.push("", `**En curso:** ${running.join(", ")}`)
+    }
     lines.push(
       "",
       `⏳ En curso: ${done}/${record.totalTasks} tareas cerradas. Consulta de nuevo \`aiapaec_run_status\` con \`runId: "${record.runId}"\`.`,

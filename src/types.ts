@@ -87,6 +87,8 @@ export interface RunRecord {
   finishedAt?: string
   status: "running" | "completed" | "failed" | "aborted"
   totalTasks: number
+  /** Tareas actualmente en vuelo (solo mientras el run está running). */
+  inFlight?: string[]
   results: TaskResult[]
   error?: string
 }

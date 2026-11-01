@@ -712,6 +712,27 @@ test("tools: engram_status reporta ausencia con guía", async () => {
   assert.match(String(response.content), /NO está registrado/)
 })
 
+test("tools: run_status muestra las tareas en curso", async () => {
+  const { ctx, tools } = makeToolCtx()
+  await registerTools(ctx, TOOL_SETTINGS)
+  const runStatus = tools.get("run_status")!
+
+  await saveRun(ctx, {
+    runId: "RUN-INFLIGHT",
+    objective: "x",
+    baseBranch: "dev",
+    startedAt: new Date().toISOString(),
+    status: "running",
+    totalTasks: 2,
+    inFlight: ["T1", "T2"],
+    results: [],
+  })
+
+  const response = await runStatus.execute({ runId: "RUN-INFLIGHT" })
+  assert.match(String(response.content), /En curso/)
+  assert.match(String(response.content), /T1/)
+})
+
 test("historial: guardar, recuperar y listar runs", async () => {
   const ctx = makeCtx()
   const record = {
