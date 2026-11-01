@@ -14,6 +14,8 @@ export interface RunnerOptions {
   workdir: string
   /** true = conservar sesiones hijas al terminar. */
   keepSessions: boolean
+  /** ID de la sesión orquestadora; las hijas se crean como subagentes de ella. */
+  parentSessionID?: string
   /** Se invoca al cerrar cada oleada con el avance acumulado (para persistir el estado). */
   onUpdate?: (snapshot: { results: readonly TaskResult[] }) => void | Promise<void>
 }
@@ -123,6 +125,7 @@ export async function runOrchestration(options: RunnerOptions): Promise<Orchestr
           baseBranch,
           workdir,
           keepSessions,
+          parentSessionID: options.parentSessionID,
         }),
       ),
     )
@@ -165,6 +168,7 @@ interface TaskRunOptions {
   baseBranch: string
   workdir: string
   keepSessions: boolean
+  parentSessionID?: string
 }
 
 async function executeTask(
@@ -180,6 +184,7 @@ async function executeTask(
     const created = await ctx.session.create({
       title: `[orq] ${task.id} · ${task.agent}`,
       agent: task.agent,
+      ...(options.parentSessionID ? { parentID: options.parentSessionID } : {}),
       permissions: buildSessionPermissions(task, options.workdir),
       metadata: {
         orquestacion: true,

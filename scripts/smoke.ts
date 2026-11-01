@@ -9,14 +9,16 @@ import type { PluginCtx, TaskSpec } from "../src/types"
 
 function makeCtx(options: { fail?: string[]; delayMs?: number } = {}): PluginCtx {
   let counter = 0
+  const created: any[] = []
   const sessions = new Map<string, { input: any; prompt?: string; messages: any[] }>()
   const storage = new Map<string, any>()
 
-  return {
+  const ctx: PluginCtx = {
     options: {},
     location: { directory: "C:/repo" },
     session: {
       async create(input: any) {
+        created.push(input)
         const id = `ses_test_${++counter}`
         sessions.set(id, { input, messages: [] })
         return { id }
@@ -76,6 +78,9 @@ function makeCtx(options: { fail?: string[]; delayMs?: number } = {}): PluginCtx
     command: { async transform() { return { dispose: async () => {} } } },
     tool: { async transform() { return { dispose: async () => {} } } },
   }
+
+  ;(ctx as any).__created = created
+  return ctx
 }
 
 async function testWaves() {
@@ -174,6 +179,7 @@ async function testRunner() {
     baseBranch: "dev",
     workdir: "C:/repo",
     keepSessions: true,
+    parentSessionID: "ses_parent",
     onUpdate: ({ results }) => {
       updates.push(results.length)
     },
@@ -184,6 +190,10 @@ async function testRunner() {
   assert.equal(result.results[2]!.summary, "resumen de T3")
   assert.ok(updates.length >= 2, `se esperaban actualizaciones de progreso, hubo ${updates.length}`)
   assert.equal(updates.at(-1), 3)
+
+  const created = (ctx as any).__created as any[]
+  assert.ok(created.length === 3)
+  assert.ok(created.every((input) => input.parentID === "ses_parent"), "las sesiones hijas deben declarar parentID")
 
   const parallel = makeCtx({ delayMs: 300 })
   const started = Date.now()

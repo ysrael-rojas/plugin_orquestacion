@@ -109,7 +109,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
         additionalProperties: false,
       },
       options: { namespace: "aiapaec", codemode: false },
-      execute: async (input: any) => {
+      execute: async (input: any, context: any) => {
         const payload = input as OrchestrateInput & { runId?: string; wait?: boolean }
 
         const knownAgents = await listAgentIds(ctx)
@@ -159,6 +159,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           baseBranch: settings.baseBranch,
           workdir: settings.workdir,
           keepSessions,
+          parentSessionID: typeof context?.sessionID === "string" ? context.sessionID : undefined,
           onUpdate: async ({ results }) => {
             try {
               await saveRun(ctx, { ...base, results: [...results] })
