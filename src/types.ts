@@ -150,3 +150,19 @@ export interface PluginCtx {
     transform(cb: (editor: any) => void): Promise<{ dispose?: () => Promise<void> }>
   }
 }
+
+/** Opciones de configuración del plugin definidas en `opencode.json`. */
+export interface PluginOptions {
+  /** Rama base desde la que se derivan las ramas de tarea. */
+  baseBranch?: string
+  /** Si es `true`, elimina las sesiones hijas al terminar. */
+  cleanupSessions?: boolean
+  /** Si es `true`, elimina los worktrees de tareas exitosas al terminar. */
+  cleanupWorktrees?: boolean
+  /** Directorio padre donde se crean los worktrees. */
+  worktreeParent?: string
+  /** Timeout por tarea en milisegundos. */
+  taskTimeoutMs?: number
+  /** Cuántos runs conservar en el historial (entero positivo, default 50). */
+  runHistory?: number
+}

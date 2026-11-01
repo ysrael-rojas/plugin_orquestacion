@@ -3,7 +3,7 @@ import { Plugin } from "@opencode/plugin"
 import { AGENTS } from "./agents"
 import { detectEngram, formatEngramStatus } from "./engram"
 import { registerTools } from "./tools"
-import type { PluginCtx } from "./types"
+import type { PluginCtx, PluginOptions } from "./types"
 
 /**
  * Plugin de orquestación para OpenCode V2 (arquitectura Aiapaec).
@@ -38,6 +38,13 @@ export default Plugin.define({
       typeof options.worktreeParent === "string" && options.worktreeParent.trim()
         ? options.worktreeParent.trim()
         : undefined
+
+    const rawRunHistory = (options as PluginOptions).runHistory
+    const runHistory =
+      typeof rawRunHistory === "number" && Number.isFinite(rawRunHistory) && rawRunHistory > 0
+        ? Math.floor(rawRunHistory)
+        : 50
+
     const workdir = ctx.location?.directory ?? process.cwd()
 
     const tools = await registerTools(ctx, {
@@ -46,6 +53,7 @@ export default Plugin.define({
       cleanupWorktrees,
       taskTimeoutMs,
       worktreeParent,
+      runHistory,
       workdir,
     })
 
