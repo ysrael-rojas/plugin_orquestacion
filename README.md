@@ -2,6 +2,8 @@
 
 Plugin de orquestación para **OpenCode V2**: implementa la arquitectura "Aiapaec", donde un orquestador delega subtareas en subagentes especializados (contexto, explorador, coder, QA, deployer), con contratos JSON, permisos reales por archivo y ramas derivadas de la rama de desarrollo.
 
+La guía completa del flujo de trabajo está en [`docs/flujo-de-trabajo.md`](docs/flujo-de-trabajo.md).
+
 Funciona con tu suscripción **OpenCode Go**: los modelos se heredan de tu configuración; no requiere API keys adicionales.
 
 ## Requisitos
