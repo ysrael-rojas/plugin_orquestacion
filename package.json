@@ -1,6 +1,6 @@
 {
   "name": "plugin-de-orquestacion-para-opencode",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Plugin de orquestación de agentes y subagentes para OpenCode (arquitectura Aiapaec)",
   "type": "module",
   "exports": {
@@ -11,13 +11,17 @@
     "README.md"
   ],
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "agents:sync": "esbuild scripts/sync-agents.ts --bundle --platform=node --format=esm --outfile=.tmp/sync-agents.mjs --log-level=error && node .tmp/sync-agents.mjs",
+    "agents:install": "esbuild scripts/sync-agents.ts --bundle --platform=node --format=esm --outfile=.tmp/sync-agents.mjs --log-level=error && node .tmp/sync-agents.mjs --install",
+    "test": "npm run typecheck && esbuild scripts/smoke.ts --bundle --platform=node --format=esm --outfile=.tmp/smoke.mjs --log-level=error && node .tmp/smoke.mjs"
   },
   "dependencies": {
     "@opencode/plugin": "^2.2.5"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.7.0"
   }
 }
