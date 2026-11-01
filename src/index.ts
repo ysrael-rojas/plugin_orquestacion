@@ -46,6 +46,23 @@ export default Plugin.define({
 
     const commands = await ctx.command.transform((editor: any) => {
       editor.add({
+        name: "orquestar",
+        description: "Orquesta una petición: la descompone en subagentes y delega con aiapaec_orchestrate",
+        execute: async ({ sessionID, prompt, delivery }: any) => {
+          await ctx.session.prompt({
+            sessionID,
+            delivery,
+            text: [
+              "Orquesta la siguiente petición usando la herramienta `aiapaec_orchestrate`.",
+              "Descompón en tareas atómicas con `dependsOn`, elige tú el `runId`, usa `worktree: true` para tareas que escriban código y consulta `aiapaec_run_status` hasta que el run termine.",
+              "",
+              prompt.text,
+            ].join("\n"),
+          })
+        },
+      })
+
+      editor.add({
         name: "engram-status",
         description:
           "Diagnóstico de la integración Engram (conectado / registrado sin conexión / ausente)",

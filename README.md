@@ -85,6 +85,7 @@ La herramienta se ejecuta **en segundo plano**: devuelve un `runId` de inmediato
 
 | Comando | Descripción |
 |---|---|
+| `/orquestar <petición>` | Inicia una orquestación: el agente descompone la petición y delega con `aiapaec_orchestrate`. |
 | `/engram-status` | Muestra el diagnóstico de Engram y cómo resolverlo. |
 
 ### Ejecución en segundo plano y recuperación
