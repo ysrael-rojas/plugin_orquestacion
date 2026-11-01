@@ -139,15 +139,21 @@ async function testEngram() {
 
   const connected = makeCtx()
   connected.mcp.list = async () => ({
-    data: [{ name: "engram", status: { type: "connected" } }],
+    data: [{ name: "engram", status: { status: "connected" } }],
   })
   assert.equal((await detectEngram(connected)).state, "connected")
 
   const unavailable = makeCtx()
   unavailable.mcp.list = async () => ({
-    data: [{ name: "engram", status: { type: "failed" } }],
+    data: [{ name: "engram", status: { status: "failed", error: "boom" } }],
   })
   assert.equal((await detectEngram(unavailable)).state, "unavailable")
+
+  const pending = makeCtx()
+  pending.mcp.list = async () => ({
+    data: [{ name: "engram", status: { status: "pending" } }],
+  })
+  assert.equal((await detectEngram(pending)).state, "unavailable")
   console.log("ok engram")
 }
 

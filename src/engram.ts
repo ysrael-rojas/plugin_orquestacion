@@ -71,12 +71,9 @@ function normalizeMcpList(output: any): McpEntry[] {
 function describeStatus(status: any): string {
   if (status == null) return "unknown"
   if (typeof status === "string") return status
-  const tag =
-    status.type ??
-    status._tag ??
-    status.tag ??
-    Object.keys(status).find((key) => key !== "data" && key !== "name")
-  return String(tag ?? "unknown")
+  // Forma real de OpenCode V2: { status: "connected" | "pending" | "disabled" | "failed" | "needs_auth" }
+  const value = status.status ?? status.type ?? status._tag ?? status.tag
+  return typeof value === "string" ? value : "unknown"
 }
 
 const INSTALL_GUIDANCE = [
