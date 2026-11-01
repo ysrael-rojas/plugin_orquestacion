@@ -47,7 +47,7 @@ export function buildTaskPrompt(options: PromptOptions): string {
     "",
     `Objetivo global de la orquestación: **${runObjective}**`,
     "",
-    "Formas parte de una orquestación de subagentes (Gentle Shell). Tu trabajo se limita a la tarea del contrato.",
+    "Formas parte de una orquestación de subagentes (Aiapaec). Tu trabajo se limita a la tarea del contrato.",
     "",
     "## Contrato de entrada",
     "```json",

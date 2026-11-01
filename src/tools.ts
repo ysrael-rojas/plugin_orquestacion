@@ -13,9 +13,13 @@ export interface ToolSettings {
 export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
   return ctx.tool.transform((editor: any) => {
     editor.namespace({
-      name: "gentle",
+      name: "aiapaec",
       description:
-        "Orquestación de agentes y subagentes (Gentle Shell): delega tareas, ejecuta en paralelo y consolida reportes.",
+        "Orquestación de agentes y subagentes (Aiapaec): delega tareas, ejecuta en paralelo y consolida reportes.",
+    })
+    editor.namespace({
+      name: "gentle",
+      description: "Estado y diagnóstico de la integración Engram.",
     })
 
     editor.add({
@@ -94,7 +98,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
         required: ["objective", "tasks"],
         additionalProperties: false,
       },
-      options: { namespace: "gentle", codemode: false },
+      options: { namespace: "aiapaec", codemode: false },
       execute: async (input: any) => {
         const payload = input as OrchestrateInput
 

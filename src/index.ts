@@ -6,10 +6,11 @@ import { registerTools } from "./tools"
 import type { PluginCtx } from "./types"
 
 /**
- * Plugin de orquestación para OpenCode V2 (arquitectura Gentle Shell).
+ * Plugin de orquestación para OpenCode V2 (arquitectura Aiapaec).
  *
  * Registra:
- *  - Herramientas de namespace `gentle`: `orchestrate` y `engram_status`.
+ *  - Herramientas de namespace `aiapaec`: `orchestrate` (y `run_status` en v0.2).
+ *  - Herramienta de namespace `gentle`: `engram_status`.
  *  - Comando `/engram-status`.
  *
  * Los agentes (orquestador, contexto, explorador, coder, qa, deployer) se

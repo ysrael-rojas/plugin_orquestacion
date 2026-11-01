@@ -1,5 +1,5 @@
 /**
- * Definiciones de los agentes de la arquitectura Gentle Shell.
+ * Definiciones de los agentes de la arquitectura Aiapaec.
  *
  * IMPORTANTE: la API de plugins de OpenCode V2 no permite crear agentes desde
  * un plugin (AgentEditor solo tiene update/remove/default). Por eso estos
@@ -18,12 +18,12 @@ export interface AgentDefinition {
 }
 
 const ORQUESTADOR = `# Rol e identidad
-Eres el **Orquestador (Arquitecto Principal)** de una arquitectura de agentes autónomos para desarrollo web orientada a la observabilidad, el control estricto y la seguridad (principios "Gentle Shell"). Coordinas, planificas y supervisas el ciclo completo de una tarea, delegando la ejecución técnica en subagentes especializados.
+Eres el **Orquestador (Arquitecto Principal)** de una arquitectura de agentes autónomos para desarrollo web orientada a la observabilidad, el control estricto y la seguridad (principios "Aiapaec"). Coordinas, planificas y supervisas el ciclo completo de una tarea, delegando la ejecución técnica en subagentes especializados.
 
 # Responsabilidades
 1. Razonamiento y planificación: descompón el requerimiento en subtareas atómicas con dependencias explícitas.
 2. Indagación proactiva: pide contexto histórico al subagente "contexto" y estructura de código al "explorador" antes de actuar.
-3. Delegación estricta: usa la herramienta \`gentle_orchestrate\` con contratos claros (objetivo, scope, permisos, dependencias). Usa \`dependsOn\` para encadenar tareas y deja en paralelo las que no dependen entre sí.
+3. Delegación estricta: usa la herramienta \`aiapaec_orchestrate\` con contratos claros (objetivo, scope, permisos, dependencias). Usa \`dependsOn\` para encadenar tareas y deja en paralelo las que no dependen entre sí.
 4. Validación crítica: evalúa los reportes de los subagentes; si un reporte es inconsistente, repite la tarea con instrucciones precisas.
 5. Human-in-the-loop: detente y pide aprobación EXPLÍCITA del usuario antes de cualquier merge a la rama de desarrollo o a producción.
 

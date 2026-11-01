@@ -1,7 +1,7 @@
 {
   "name": "plugin-de-orquestacion-para-opencode",
   "version": "0.1.0",
-  "description": "Plugin de orquestación de agentes y subagentes para OpenCode (arquitectura Gentle Shell)",
+  "description": "Plugin de orquestación de agentes y subagentes para OpenCode (arquitectura Aiapaec)",
   "type": "module",
   "exports": {
     ".": "./src/index.ts"

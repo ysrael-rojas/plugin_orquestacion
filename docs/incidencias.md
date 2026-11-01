@@ -3,9 +3,9 @@
 Registro de incidencias pendientes de investigación. Creado como respaldo porque
 Engram MCP no está conectado y `mem_save` falla (ver incidencia #2).
 
-## 1. `gentle_orchestrate` pierde el reporte de retorno — 2026-10-31
+## 1. `aiapaec_orchestrate` (antes `gentle_orchestrate`) pierde el reporte de retorno — 2026-10-31
 
-**Síntoma:** la herramienta `gentle_orchestrate` devolvió `Tool execution
+**Síntoma:** la herramienta `aiapaec_orchestrate` devolvió `Tool execution
 interrupted / Tool result missing` dos veces seguidas, aunque las subtareas **sí
 se ejecutaron** (verificado con `git`: la rama `feat/TASK-DOCS` y el commit
 `0188e9d` existían y eran correctos).

@@ -1,6 +1,6 @@
 # Plugin de orquestación para OpenCode
 
-Plugin de orquestación para **OpenCode V2**: implementa la arquitectura "Gentle Shell", donde un orquestador delega subtareas en subagentes especializados (contexto, explorador, coder, QA, deployer), con contratos JSON, permisos reales por archivo y ramas derivadas de la rama de desarrollo.
+Plugin de orquestación para **OpenCode V2**: implementa la arquitectura "Aiapaec", donde un orquestador delega subtareas en subagentes especializados (contexto, explorador, coder, QA, deployer), con contratos JSON, permisos reales por archivo y ramas derivadas de la rama de desarrollo.
 
 Funciona con tu suscripción **OpenCode Go**: los modelos se heredan de tu configuración; no requiere API keys adicionales.
 
@@ -68,13 +68,13 @@ Pídele al orquestador algo como:
 
 > Orquesta: implementa el endpoint de login con JWT. Primero pide contexto y explora el repo; luego que el coder implemente en `feat/TASK-101`, QA valida y el deployer prepara el PR hacia `dev`.
 
-El orquestador llamará a `gentle_orchestrate` con un plan de tareas. Las tareas sin dependencias corren en paralelo; las que declaran `dependsOn` esperan.
+El orquestador llamará a `aiapaec_orchestrate` con un plan de tareas. Las tareas sin dependencias corren en paralelo; las que declaran `dependsOn` esperan.
 
 ### Herramientas registradas
 
 | Herramienta | Descripción |
 |---|---|
-| `gentle_orchestrate` | Ejecuta un plan de subtareas en subagentes. Devuelve reporte consolidado. |
+| `aiapaec_orchestrate` | Ejecuta un plan de subtareas en subagentes. Devuelve reporte consolidado. |
 | `gentle_engram_status` | Diagnóstico de Engram (3 estados). |
 
 ### Comando
@@ -85,7 +85,7 @@ El orquestador llamará a `gentle_orchestrate` con un plan de tareas. Las tareas
 
 ## Ejemplo de uso
 
-A continuación se muestra un plan realista y minimalista para `gentle_orchestrate`. El objetivo es implementar un endpoint de login con JWT; las tareas de contexto y exploración corren en paralelo, el coder espera a ambas, el QA revisa el código y el deployer prepara el PR.
+A continuación se muestra un plan realista y minimalista para `aiapaec_orchestrate`. El objetivo es implementar un endpoint de login con JWT; las tareas de contexto y exploración corren en paralelo, el coder espera a ambas, el QA revisa el código y el deployer prepara el PR.
 
 ```json
 {
