@@ -81,6 +81,12 @@ export interface RunRecord {
   error?: string
 }
 
+/** Estado compartido para cancelar un run en curso. */
+export interface RunControl {
+  aborted: boolean
+  sessions: Set<string>
+}
+
 export interface PermissionRule {
   action: string
   resource: string
@@ -104,6 +110,7 @@ export interface PluginCtx {
     wait(input: any): Promise<void>
     context(input: any): Promise<any[]>
     update(input: any): Promise<void>
+    interrupt(input: any): Promise<unknown>
     remove?(input: any): Promise<void>
   }
   storage: {

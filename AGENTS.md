@@ -4,7 +4,8 @@ Plugin TypeScript ESM para OpenCode V2 (arquitectura "Aiapaec"). OpenCode carga 
 
 ## Comandos
 
-- `npm test` — typecheck + bundle de pruebas con esbuild + `node --test` (7 pruebas, <1 s). No necesita OpenCode corriendo.
+- `npm test` — lint (Biome) + typecheck + bundle de pruebas con esbuild + `node --test` (10 pruebas, ~1 s). No necesita OpenCode corriendo.
+- `npm run lint` — solo Biome (`biome.json`; `noExplicitAny`, `noNonNullAssertion` y `useOptionalChain` desactivadas por estilo del repo).
 - `npm run typecheck` — solo `tsc --noEmit` (no cubre `scripts/`).
 - `npm run agents:sync` — regenera `config/agents.json` desde `src/agents.ts`.
 - `npm run agents:install` — además fusiona los agentes en `~/.config/opencode/opencode.json` (o `$OPENCODE_CONFIG`).

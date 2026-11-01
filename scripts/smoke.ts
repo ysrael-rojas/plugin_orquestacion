@@ -359,6 +359,32 @@ test("worktrees: la tarea fallida conserva su worktree", async () => {
   assert.equal(wt.removed.length, 0, "un worktree de tarea fallida no debe eliminarse")
 })
 
+test("abort: las tareas pendientes se omiten al cancelar el run", async () => {
+  const ctx = makeCtx({ delayMs: 10 })
+  const control = { aborted: false, sessions: new Set<string>() }
+  const run = await runOrchestration({
+    ctx,
+    input: {
+      objective: "abort",
+      tasks: [
+        { id: "A1", agent: "explorador", objective: "a" },
+        { id: "A2", agent: "qa", objective: "b", dependsOn: ["A1"] },
+      ],
+    },
+    baseBranch: "dev",
+    workdir: "C:/repo",
+    keepSessions: true,
+    control,
+    onUpdate: () => {
+      control.aborted = true
+    },
+  })
+
+  assert.equal(run.results[0]!.status, "succeeded")
+  assert.equal(run.results[1]!.status, "skipped")
+  assert.ok(String(run.results[1]!.error).includes("abortado"))
+})
+
 test("historial: guardar, recuperar y listar runs", async () => {
   const ctx = makeCtx()
   const record = {

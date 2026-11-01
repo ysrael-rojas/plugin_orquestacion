@@ -5,6 +5,7 @@ import { buildSessionPermissions } from "./permissions"
 import type {
   OrchestrateInput,
   PluginCtx,
+  RunControl,
   TaskResult,
   TaskSpec,
 } from "./types"
@@ -26,6 +27,8 @@ export interface RunnerOptions {
   worktreeParent?: string
   /** true = eliminar los worktrees de tareas exitosas al terminar el run. */
   cleanupWorktrees?: boolean
+  /** Estado compartido para cancelar el run (aiapaec_run_abort). */
+  control?: RunControl
 }
 
 export interface OrchestrationResult {
@@ -138,6 +141,7 @@ export async function runOrchestration(options: RunnerOptions): Promise<Orchestr
           parentSessionID: options.parentSessionID,
           projectID: options.projectID,
           worktreeParent,
+          control: options.control,
           upstream: (task.dependsOn ?? [])
             .map((dep) => byId.get(dep))
             .filter((entry): entry is TaskResult => Boolean(entry))
@@ -211,6 +215,7 @@ interface TaskRunOptions {
   projectID?: string
   worktreeParent?: string
   upstream?: Array<{ taskId: string; worktreeDirectory?: string; branch?: string }>
+  control?: RunControl
 }
 
 async function executeTask(
@@ -222,6 +227,16 @@ async function executeTask(
   const started = Date.now()
   let sessionID: string | undefined
   let worktreeDirectory: string | undefined
+
+  if (options.control?.aborted) {
+    return {
+      taskId: task.id,
+      agent: task.agent,
+      status: "skipped",
+      branch,
+      error: "Run abortado por el usuario",
+    }
+  }
 
   try {
     if (task.worktree) {
@@ -255,6 +270,7 @@ async function executeTask(
     })
 
     sessionID = created.id
+    options.control?.sessions.add(sessionID)
 
     await ctx.session.prompt({
       sessionID,
@@ -317,6 +333,9 @@ async function executeTask(
       error: error instanceof Error ? error.message : String(error),
     }
   } finally {
+    if (sessionID) {
+      options.control?.sessions.delete(sessionID)
+    }
     if (sessionID && !options.keepSessions) {
       try {
         await ctx.session.remove?.({ sessionID })
