@@ -218,10 +218,21 @@ Si el subagente no devuelve JSON válido, el runner conserva el texto como resum
 
 Cada orquestación se guarda en el storage del plugin (`runs/<runId>`) con objetivo, rama base, timestamps, estado (`running`/`completed`/`failed`) y resultados por tarea. El estado se actualiza al cerrar cada oleada, así que sobrevive a interrupciones del tool.
 
-## Limitaciones conocidas (v0.2)
+## Limitaciones conocidas (v0.3)
 
 - Sin TUI: el estado se consulta con `aiapaec_run_status` y en las sesiones hijas.
-- `allowed_files` todavía no es un bloqueo estricto (solo `forbidden_files` y `write_files`/`bash`).
+- `allowed_files` es advisory por defecto; usa `strict_scope: true` en la tarea para bloquearlo de verdad.
 - Engram se integra vía MCP (los subagentes usan `mem_*` si están conectados).
-- El bloque `config/agents.json` es una copia de `src/agents.ts`; mantener ambos en sincronía si se editan prompts.
-- El modo segundo plano no aborta sesiones hijas si el usuario cancela: el run termina igual (abort explícito queda para v0.3).
+- El bloque `config/agents.json` se genera desde `src/agents.ts` con `npm run agents:sync` (no editar a mano).
+- El modo segundo plano no aborta sesiones hijas si el usuario cancela: el run termina igual (abort explícito queda para v0.4).
+
+## Desarrollo
+
+```bash
+npm test             # typecheck + pruebas (node:test)
+npm run agents:sync  # regenera config/agents.json desde src/agents.ts
+npm run agents:install  # además fusiona los agentes en ~/.config/opencode/opencode.json
+```
+
+Si `mem_save` falla con "could not resolve an authoritative OpenCode runtime
+session", reinicia el servicio: `opencode service restart` (ver `docs/incidencias.md`).

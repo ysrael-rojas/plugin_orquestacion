@@ -70,3 +70,20 @@ respuesta al usuario igualmente — el fallo de memoria nunca bloquea.
    error restante de `engram doctor`.
 4. Verificación: `engram doctor` → **ok (0 errores)** · `opencode mcp list` →
    `engram connected` · `mem_save` operativo desde sesiones registradas.
+
+**Actualización v0.3 — causa raíz final de "sin sesión autoritativa":**
+El error se reprodujo en sesiones nuevas (`could not resolve an authoritative
+OpenCode runtime session`) incluso con el MCP conectado y `engram doctor` limpio.
+Diagnóstico: **estado en memoria obsoleto del servicio de OpenCode** (uptime
+largo + recargas de plugins durante el desarrollo). El adaptador resuelve
+sesiones contra sus mapas internos; una sesión nueva creada en ese estado no se
+resuelve y la escritura falla cerrada. Evidencia: la misma llamada `mem_save`
+falló antes del reinicio y devolvió `OK` inmediatamente después de
+`opencode service restart` (`Probe v0.3 attribution C`, observación id 225).
+Remedio operativo: `opencode service restart` tras periodos con muchas recargas
+de plugins. Instrumentación de diagnóstico retirada; el adaptador de Engram
+quedó con su código original.
+
+Además (v0.3, commit `141350a`): las sesiones hijas del runner declaran
+`parentID`, lo que da atribución correcta de los writes de subagentes y evita la
+inflación de sesiones (issue #116 de Engram).
