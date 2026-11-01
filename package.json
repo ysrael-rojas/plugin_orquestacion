@@ -1,0 +1,23 @@
+{
+  "name": "plugin-de-orquestacion-para-opencode",
+  "version": "0.1.0",
+  "description": "Plugin de orquestación de agentes y subagentes para OpenCode (arquitectura Gentle Shell)",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode/plugin": "^2.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
