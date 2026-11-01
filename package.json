@@ -1,10 +1,11 @@
 {
   "name": "plugin-de-orquestacion-para-opencode",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Plugin de orquestación de agentes y subagentes para OpenCode (arquitectura Aiapaec)",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./tui": "./src/tui.ts"
   },
   "files": [
     "src",
@@ -26,5 +27,17 @@
     "@types/node": "^22.10.0",
     "esbuild": "^0.28.2",
     "typescript": "^5.7.0"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ysrael-rojas/plugin_orquestacion.git"
+  },
+  "keywords": [
+    "opencode",
+    "plugin",
+    "orchestration",
+    "agents",
+    "subagents",
+    "worktrees"
+  ]
 }
