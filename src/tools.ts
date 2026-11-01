@@ -2,7 +2,10 @@ import { AGENTS } from "./agents"
 import { detectEngram, formatEngramStatus } from "./engram"
 import { getRun, recentRuns, saveRun } from "./history"
 import { runOrchestration, validateTasks } from "./runner"
-import type { OrchestrateInput, PluginCtx, RunRecord, TaskResult } from "./types"
+import type { OrchestrateInput, PluginCtx, RunControl, RunRecord, TaskResult } from "./types"
+
+/** Runs activos en esta instancia del plugin (para aiapaec_run_abort). */
+const activeRuns = new Map<string, RunControl>()
 
 export interface ToolSettings {
   baseBranch: string
@@ -168,6 +171,16 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
         const runId = normalizeRunId(payload.runId) ?? generateRunId()
         const startedAt = new Date().toISOString()
 
+        if (activeRuns.has(runId)) {
+          return {
+            content: `❌ Ya hay un run activo con el id \`${runId}\`. Consulta \`aiapaec_run_status\` o espera a que termine.`,
+            metadata: { ok: false, runId },
+          }
+        }
+
+        const control: RunControl = { aborted: false, sessions: new Set() }
+        activeRuns.set(runId, control)
+
         const base: RunRecord = {
           runId,
           objective: payload.objective,
@@ -194,6 +207,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           projectID,
           worktreeParent: settings.worktreeParent,
           cleanupWorktrees: payload.cleanupWorktrees ?? settings.cleanupWorktrees,
+          control,
           onUpdate: async ({ results }) => {
             try {
               await saveRun(ctx, { ...base, results: [...results] })
@@ -203,6 +217,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           },
         })
           .then(async (result): Promise<RunRecord> => {
+            activeRuns.delete(runId)
             const record: RunRecord = {
               ...base,
               finishedAt: result.finishedAt,
@@ -217,6 +232,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             return record
           })
           .catch(async (error): Promise<RunRecord> => {
+            activeRuns.delete(runId)
             const record: RunRecord = {
               ...base,
               finishedAt: new Date().toISOString(),
@@ -309,6 +325,59 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
         }
 
         return { content: formatRunsList(runs), metadata: { ok: true, runs: runs.length } }
+      },
+    })
+
+    editor.add({
+      name: "run_abort",
+      description:
+        "Cancela un run en curso por runId: interrumpe las sesiones hijas activas y las tareas pendientes quedan como skipped.",
+      input: {
+        type: "object",
+        properties: {
+          runId: { type: "string", description: "ID del run a cancelar." },
+        },
+        required: ["runId"],
+        additionalProperties: false,
+      },
+      options: { namespace: "aiapaec", codemode: false },
+      execute: async (input: any) => {
+        const runId = typeof input?.runId === "string" ? input.runId.trim() : ""
+        if (!runId) {
+          return { content: "Indica el `runId` a cancelar.", metadata: { ok: false } }
+        }
+
+        const control = activeRuns.get(runId)
+        if (!control) {
+          const record = await getRun(ctx, runId)
+          return {
+            content: record
+              ? `El run \`${runId}\` no está activo (estado: ${record.status}); no hay nada que abortar.`
+              : `No existe un run con id \`${runId}\`.`,
+            metadata: { ok: false },
+          }
+        }
+
+        control.aborted = true
+        let interrupted = 0
+        for (const sessionID of [...control.sessions]) {
+          try {
+            await ctx.session.interrupt({ sessionID, resume: false })
+            interrupted++
+          } catch {
+            // La sesión pudo haber terminado entre el snapshot y el interrupt.
+          }
+        }
+
+        return {
+          content: [
+            `⏹️ Abort solicitado para \`${runId}\`.`,
+            `Sesiones interrumpidas: ${interrupted}.`,
+            "Las tareas pendientes se marcarán como skipped.",
+            `Consulta el estado final con \`aiapaec_run_status\` (runId \`${runId}\`).`,
+          ].join("\n"),
+          metadata: { ok: true, runId, interrupted },
+        }
       },
     })
 
