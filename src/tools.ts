@@ -7,6 +7,8 @@ import type { OrchestrateInput, PluginCtx, RunRecord, TaskResult } from "./types
 export interface ToolSettings {
   baseBranch: string
   cleanupSessions: boolean
+  cleanupWorktrees: boolean
+  worktreeParent?: string
   workdir: string
 }
 
@@ -91,6 +93,11 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
                   type: "string",
                   description: "Override de modelo, formato providerID/modelID.",
                 },
+                worktree: {
+                  type: "boolean",
+                  description:
+                    "Ejecuta la tarea en un git worktree aislado (carpeta y rama propias). Recomendado para tareas que escriben código.",
+                },
               },
               required: ["id", "agent", "objective"],
               additionalProperties: true,
@@ -109,13 +116,22 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             type: "boolean",
             description: "Si es true, espera el resultado completo (útil para planes cortos).",
           },
+          cleanupWorktrees: {
+            type: "boolean",
+            description:
+              "Si es true, elimina los worktrees de tareas exitosas al terminar el run (los de tareas fallidas se conservan).",
+          },
         },
         required: ["objective", "tasks"],
         additionalProperties: false,
       },
       options: { namespace: "aiapaec", codemode: false },
       execute: async (input: any, context: any) => {
-        const payload = input as OrchestrateInput & { runId?: string; wait?: boolean }
+        const payload = input as OrchestrateInput & {
+          runId?: string
+          wait?: boolean
+          cleanupWorktrees?: boolean
+        }
 
         const knownAgents = await listAgentIds(ctx)
         const missing = Array.from(
@@ -139,6 +155,16 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
 
         const engram = await detectEngram(ctx)
         const keepSessions = payload.keepSessions ?? !settings.cleanupSessions
+        const projectID = ctx.location.project?.id
+
+        if (payload.tasks.some((task) => task.worktree === true) && !projectID) {
+          return {
+            content:
+              "❌ Hay tareas con `worktree: true`, pero esta ubicación no expone projectID; no se puede crear el worktree.",
+            metadata: { ok: false },
+          }
+        }
+
         const runId = normalizeRunId(payload.runId) ?? generateRunId()
         const startedAt = new Date().toISOString()
 
@@ -165,6 +191,9 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           workdir: settings.workdir,
           keepSessions,
           parentSessionID: typeof context?.sessionID === "string" ? context.sessionID : undefined,
+          projectID,
+          worktreeParent: settings.worktreeParent,
+          cleanupWorktrees: payload.cleanupWorktrees ?? settings.cleanupWorktrees,
           onUpdate: async ({ results }) => {
             try {
               await saveRun(ctx, { ...base, results: [...results] })
@@ -397,8 +426,12 @@ function formatRunRecord(record: RunRecord, engramState?: string): string {
       if (result.status === "succeeded") {
         lines.push(result.summary ?? "(sin resumen)")
         if (result.sessionID) lines.push("", `*Sesión: ${result.sessionID}*`)
+        if (result.worktreeDirectory) lines.push("", `*Worktree: \`${result.worktreeDirectory}\`*`)
       } else {
         lines.push(`**Error:** ${result.error ?? "desconocido"}`)
+        if (result.worktreeDirectory) {
+          lines.push("", `*Worktree conservado: \`${result.worktreeDirectory}\`*`)
+        }
       }
     }
   }

@@ -1,3 +1,5 @@
+import { dirname, join } from "node:path"
+
 import { buildTaskPrompt, extractReport } from "./contracts"
 import { buildSessionPermissions } from "./permissions"
 import type {
@@ -18,6 +20,12 @@ export interface RunnerOptions {
   parentSessionID?: string
   /** Se invoca al cerrar cada oleada con el avance acumulado (para persistir el estado). */
   onUpdate?: (snapshot: { results: readonly TaskResult[] }) => void | Promise<void>
+  /** ID del proyecto (requerido para worktrees). */
+  projectID?: string
+  /** Directorio padre para los worktrees (default: <padre del repo>/worktrees). */
+  worktreeParent?: string
+  /** true = eliminar los worktrees de tareas exitosas al terminar el run. */
+  cleanupWorktrees?: boolean
 }
 
 export interface OrchestrationResult {
@@ -93,6 +101,8 @@ export async function runOrchestration(options: RunnerOptions): Promise<Orchestr
   const runId = `run-${startedAt.replace(/[:.]/g, "-")}`
   const results: TaskResult[] = []
   const byId = new Map<string, TaskResult>()
+  const worktreeParent = options.worktreeParent ?? join(dirname(options.workdir), "worktrees")
+  const createdWorktrees = new Map<string, string>()
 
   for (const wave of planWaves(input.tasks)) {
     const runnable: TaskSpec[] = []
@@ -126,6 +136,16 @@ export async function runOrchestration(options: RunnerOptions): Promise<Orchestr
           workdir,
           keepSessions,
           parentSessionID: options.parentSessionID,
+          projectID: options.projectID,
+          worktreeParent,
+          upstream: (task.dependsOn ?? [])
+            .map((dep) => byId.get(dep))
+            .filter((entry): entry is TaskResult => Boolean(entry))
+            .map((entry) => ({
+              taskId: entry.taskId,
+              worktreeDirectory: entry.worktreeDirectory,
+              branch: entry.branch,
+            })),
         }),
       ),
     )
@@ -143,6 +163,9 @@ export async function runOrchestration(options: RunnerOptions): Promise<Orchestr
             }
       results.push(result)
       byId.set(result.taskId, result)
+      if (result.worktreeDirectory) {
+        createdWorktrees.set(result.taskId, result.worktreeDirectory)
+      }
     })
 
     if (options.onUpdate) {
@@ -150,6 +173,22 @@ export async function runOrchestration(options: RunnerOptions): Promise<Orchestr
         await options.onUpdate({ results: [...results] })
       } catch {
         // El avance es informativo; no debe romper la orquestación.
+      }
+    }
+  }
+
+  if (options.cleanupWorktrees && options.projectID) {
+    for (const [taskId, directory] of createdWorktrees) {
+      const result = byId.get(taskId)
+      if (!result || result.status !== "succeeded") continue
+      try {
+        await ctx.worktree.remove({
+          projectID: options.projectID,
+          directory,
+          force: false,
+        })
+      } catch {
+        // La limpieza es best-effort: el worktree queda para inspección.
       }
     }
   }
@@ -169,6 +208,9 @@ interface TaskRunOptions {
   workdir: string
   keepSessions: boolean
   parentSessionID?: string
+  projectID?: string
+  worktreeParent?: string
+  upstream?: Array<{ taskId: string; worktreeDirectory?: string; branch?: string }>
 }
 
 async function executeTask(
@@ -179,13 +221,31 @@ async function executeTask(
   const branch = task.branch ?? `feat/${task.id}`
   const started = Date.now()
   let sessionID: string | undefined
+  let worktreeDirectory: string | undefined
 
   try {
+    if (task.worktree) {
+      if (!options.projectID) {
+        throw new Error(`La tarea ${task.id} pidió worktree pero no hay projectID disponible.`)
+      }
+      if (!options.worktreeParent) {
+        throw new Error(`La tarea ${task.id} pidió worktree pero falta el directorio padre.`)
+      }
+      const worktree = await ctx.worktree.create({
+        projectID: options.projectID,
+        branch: options.baseBranch,
+        directory: normalizePath(options.worktreeParent),
+        name: worktreeName(options.runId, task.id),
+      })
+      worktreeDirectory = worktree.directory
+    }
+
     const created = await ctx.session.create({
       title: `[orq] ${task.id} · ${task.agent}`,
       agent: task.agent,
       ...(options.parentSessionID ? { parentID: options.parentSessionID } : {}),
-      permissions: buildSessionPermissions(task, options.workdir),
+      ...(worktreeDirectory ? { location: { directory: worktreeDirectory } } : {}),
+      permissions: buildSessionPermissions(task, worktreeDirectory ?? options.workdir),
       metadata: {
         orquestacion: true,
         runId: options.runId,
@@ -202,6 +262,8 @@ async function executeTask(
         task,
         baseBranch: options.baseBranch,
         runObjective: options.runObjective,
+        worktreeDirectory,
+        upstream: options.upstream,
       }),
     })
 
@@ -234,6 +296,7 @@ async function executeTask(
       status: failedByReport ? "failed" : "succeeded",
       sessionID,
       branch: pickString(report, "artifacts.git_branch") ?? branch,
+      worktreeDirectory,
       summary,
       report,
       text,
@@ -249,6 +312,7 @@ async function executeTask(
       status: "failed",
       sessionID,
       branch,
+      worktreeDirectory,
       latencyMs: Date.now() - started,
       error: error instanceof Error ? error.message : String(error),
     }
@@ -315,4 +379,16 @@ function firstLine(text: string | undefined): string | undefined {
   if (!text) return undefined
   const line = text.split("\n").find((entry) => entry.trim())
   return line?.trim()
+}
+
+function normalizePath(value: string): string {
+  return value.replaceAll("\\", "/")
+}
+
+function worktreeName(runId: string, taskId: string): string {
+  const raw = `${runId}-${taskId}`
+  return raw
+    .replace(/[^A-Za-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[-.]+|[-.]+$/g, "")
 }
