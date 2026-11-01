@@ -104,6 +104,7 @@ Marca una tarea con `worktree: true` y el runner crea un **git worktree** en `<p
 - `cleanupWorktrees: true` (opción del plugin o del run) elimina los worktrees de tareas exitosas al terminar; **los de tareas fallidas se conservan** para inspección.
 - Ruta por defecto: `<padre del repo>/worktrees` (configurable con `worktreeParent`).
 - El coder crea su rama `feat/<task_id>` dentro del worktree, que arranca en HEAD detached sobre la rama base.
+- Los worktrees **no heredan `node_modules`** (ignorado por git): el subagente debe ejecutar `npm install` dentro del worktree antes de correr pruebas con dependencias.
 
 ## Ejemplo de uso
 

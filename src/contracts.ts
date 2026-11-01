@@ -62,7 +62,7 @@ export function buildTaskPrompt(options: PromptOptions): string {
   ]
 
   const worktreeNote = worktreeDirectory
-    ? ` Trabajas en el **worktree aislado** \`${worktreeDirectory}\`; todas tus operaciones de archivos y git deben ocurrir dentro de ese directorio.`
+    ? ` Trabajas en el **worktree aislado** \`${worktreeDirectory}\`; todas tus operaciones de archivos y git deben ocurrir dentro de ese directorio. Los worktrees no heredan \`node_modules\` (está en .gitignore): si necesitas ejecutar pruebas o scripts con dependencias, ejecuta \`npm install\` dentro del worktree antes.`
     : ""
 
   lines.push(
