@@ -30,6 +30,10 @@ export default Plugin.define({
 
     const cleanupSessions = options.cleanupSessions === true
     const cleanupWorktrees = options.cleanupWorktrees === true
+    const taskTimeoutMs =
+      typeof options.taskTimeoutMs === "number" && options.taskTimeoutMs > 0
+        ? options.taskTimeoutMs
+        : undefined
     const worktreeParent =
       typeof options.worktreeParent === "string" && options.worktreeParent.trim()
         ? options.worktreeParent.trim()
@@ -40,6 +44,7 @@ export default Plugin.define({
       baseBranch,
       cleanupSessions,
       cleanupWorktrees,
+      taskTimeoutMs,
       worktreeParent,
       workdir,
     })

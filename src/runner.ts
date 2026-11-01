@@ -15,6 +15,8 @@ export interface RunnerOptions {
   input: OrchestrateInput
   baseBranch: string
   workdir: string
+  /** ID canónico del run (lo elige el llamador y se usa en sesiones, worktrees y storage). */
+  runId: string
   /** true = conservar sesiones hijas al terminar. */
   keepSessions: boolean
   /** ID de la sesión orquestadora; las hijas se crean como subagentes de ella. */
@@ -29,6 +31,8 @@ export interface RunnerOptions {
   cleanupWorktrees?: boolean
   /** Estado compartido para cancelar el run (aiapaec_run_abort). */
   control?: RunControl
+  /** Timeout por tarea en ms (0/undefined = sin límite). */
+  taskTimeoutMs?: number
 }
 
 export interface OrchestrationResult {
@@ -101,7 +105,7 @@ export async function runOrchestration(options: RunnerOptions): Promise<Orchestr
   }
 
   const startedAt = new Date().toISOString()
-  const runId = `run-${startedAt.replace(/[:.]/g, "-")}`
+  const runId = options.runId
   const results: TaskResult[] = []
   const byId = new Map<string, TaskResult>()
   const worktreeParent = options.worktreeParent ?? join(dirname(options.workdir), "worktrees")
@@ -142,6 +146,7 @@ export async function runOrchestration(options: RunnerOptions): Promise<Orchestr
           projectID: options.projectID,
           worktreeParent,
           control: options.control,
+          taskTimeoutMs: options.taskTimeoutMs,
           upstream: (task.dependsOn ?? [])
             .map((dep) => byId.get(dep))
             .filter((entry): entry is TaskResult => Boolean(entry))
@@ -191,6 +196,8 @@ export async function runOrchestration(options: RunnerOptions): Promise<Orchestr
           directory,
           force: false,
         })
+        const target = byId.get(taskId)
+        if (target) target.worktreeRemoved = true
       } catch {
         // La limpieza es best-effort: el worktree queda para inspección.
       }
@@ -216,6 +223,7 @@ interface TaskRunOptions {
   worktreeParent?: string
   upstream?: Array<{ taskId: string; worktreeDirectory?: string; branch?: string }>
   control?: RunControl
+  taskTimeoutMs?: number
 }
 
 async function executeTask(
@@ -308,6 +316,14 @@ async function executeTask(
     sessionID = created.id
     options.control?.sessions.add(sessionID)
 
+    if (options.control?.aborted) {
+      try {
+        await ctx.session.interrupt({ sessionID, resume: false })
+      } catch {
+        // La sesión pudo terminar antes del interrupt.
+      }
+    }
+
     await ctx.session.prompt({
       sessionID,
       text: buildTaskPrompt({
@@ -319,7 +335,7 @@ async function executeTask(
       }),
     })
 
-    await ctx.session.wait({ sessionID })
+    await waitForSession(ctx, sessionID, options.taskTimeoutMs)
 
     const messages = await ctx.session.context({ sessionID })
     const { text, message } = extractAssistant(messages)
@@ -333,41 +349,62 @@ async function executeTask(
     }
 
     const report = extractReport(text)
-    const summary =
-      pickString(report, "summary") ?? firstLine(text) ?? "(sin respuesta)"
+    const summary = pickString(report, "summary") ?? firstLine(text) ?? "(sin respuesta)"
     const reportStatus = pickString(report, "status")?.toLowerCase()
-    const failedByReport =
-      reportStatus != null &&
-      reportStatus !== "success" &&
-      reportStatus !== "succeeded" &&
-      reportStatus !== "ok"
 
-    return {
+    const baseResult: Omit<TaskResult, "status"> = {
       taskId: task.id,
       agent: task.agent,
-      status: failedByReport ? "failed" : "succeeded",
       sessionID,
       branch: pickString(report, "artifacts.git_branch") ?? branch,
       worktreeDirectory,
       ...(needsGate ? { gated: true } : {}),
-      summary,
       report,
-      text,
       latencyMs: Date.now() - started,
       tokens: message?.tokens,
       cost: message?.cost,
+    }
+
+    if (!report || !reportStatus) {
+      return {
+        ...baseResult,
+        status: "unconfirmed",
+        summary,
+        error: "Sin reporte JSON válido con status; revisar la salida del subagente",
+      }
+    }
+
+    const failedByReport =
+      reportStatus !== "success" && reportStatus !== "succeeded" && reportStatus !== "ok"
+
+    return {
+      ...baseResult,
+      status: failedByReport ? "failed" : "succeeded",
+      summary,
       ...(failedByReport ? { error: summary } : {}),
     }
   } catch (error) {
+    if (sessionID) {
+      try {
+        await ctx.session.interrupt({ sessionID, resume: false })
+      } catch {
+        // La sesión pudo terminar antes del interrupt.
+      }
+    }
+    const aborted = options.control?.aborted === true
     return {
       taskId: task.id,
       agent: task.agent,
-      status: "failed",
+      status: aborted ? "skipped" : "failed",
       sessionID,
       branch,
       worktreeDirectory,
       latencyMs: Date.now() - started,
-      error: error instanceof Error ? error.message : String(error),
+      error: aborted
+        ? "Run abortado por el usuario"
+        : error instanceof Error
+          ? error.message
+          : String(error),
     }
   } finally {
     if (sessionID) {
@@ -447,4 +484,27 @@ function worktreeName(runId: string, taskId: string): string {
     .replace(/[^A-Za-z0-9._-]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^[-.]+|[-.]+$/g, "")
+    .slice(0, 60)
+}
+
+async function waitForSession(ctx: PluginCtx, sessionID: string, timeoutMs?: number): Promise<void> {
+  if (!timeoutMs || timeoutMs <= 0) {
+    await ctx.session.wait({ sessionID })
+    return
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      ctx.session.wait({ sessionID }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`Timeout de tarea (${timeoutMs} ms)`)),
+          timeoutMs,
+        )
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }

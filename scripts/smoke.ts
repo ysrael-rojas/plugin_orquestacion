@@ -8,7 +8,7 @@ import { buildSessionPermissions } from "../src/permissions"
 import { runOrchestration, planWaves } from "../src/runner"
 import type { PluginCtx, TaskSpec } from "../src/types"
 
-function makeCtx(options: { fail?: string[]; delayMs?: number } = {}): PluginCtx {
+function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string[] } = {}): PluginCtx {
   let counter = 0
   const created: any[] = []
   const prompts: Array<{ taskId: string; text: string }> = []
@@ -54,18 +54,21 @@ function makeCtx(options: { fail?: string[]; delayMs?: number } = {}): PluginCtx
         const session = sessions.get(sessionID)!
         const taskId = session.input?.metadata?.taskId ?? "?"
         const shouldFail = (options.fail ?? []).includes(taskId)
-        const text = shouldFail
-          ? "No pude completar la tarea.\n```json\n" +
-            JSON.stringify({ task_id: taskId, status: "failure", summary: "falló la tarea" }) +
-            "\n```"
-          : "Listo.\n```json\n" +
-            JSON.stringify({
-              task_id: taskId,
-              status: "success",
-              summary: `resumen de ${taskId}`,
-              artifacts: { modified_files: [], git_branch: `feat/${taskId}`, last_commit_hash: "abc" },
-            }) +
-            "\n```"
+        const shouldSkipReport = (options.noReport ?? []).includes(taskId)
+        const text = shouldSkipReport
+          ? "No pude completar la tarea (sin reporte estructurado)."
+          : shouldFail
+            ? "No pude completar la tarea.\n```json\n" +
+              JSON.stringify({ task_id: taskId, status: "failure", summary: "falló la tarea" }) +
+              "\n```"
+            : "Listo.\n```json\n" +
+              JSON.stringify({
+                task_id: taskId,
+                status: "success",
+                summary: `resumen de ${taskId}`,
+                artifacts: { modified_files: [], git_branch: `feat/${taskId}`, last_commit_hash: "abc" },
+              }) +
+              "\n```"
         return [
           {
             type: "assistant",
@@ -85,6 +88,9 @@ function makeCtx(options: { fail?: string[]; delayMs?: number } = {}): PluginCtx
       },
       async get(key: string) {
         return storage.get(key)
+      },
+      async remove(key: string) {
+        storage.delete(key)
       },
       async scan() {
         return { entries: [...storage.entries()].map(([key, value]) => ({ key, value })) }
@@ -182,7 +188,7 @@ test("contratos: prompt con rama base y parseo tolerante del reporte", () => {
 
   const fenced = extractReport('texto\n```json\n{"task_id":"T","summary":"s"}\n```\n')
   assert.deepEqual(fenced, { task_id: "T", summary: "s" })
-  assert.deepEqual(extractReport('{"a":1}'), { a: 1 })
+  assert.equal(extractReport('{"a":1}'), undefined, "un JSON sin forma de reporte se descarta")
   assert.equal(extractReport("sin json"), undefined)
 })
 
@@ -214,6 +220,7 @@ test("runner: oleadas, paralelismo, parentID y fallos en cadena", async () => {
   const updates: number[] = []
   const result = await runOrchestration({
     ctx,
+    runId: "RUN-SMOKE-1",
     input: {
       objective: "objetivo",
       tasks: [
@@ -245,6 +252,7 @@ test("runner: oleadas, paralelismo, parentID y fallos en cadena", async () => {
   const started = Date.now()
   await runOrchestration({
     ctx: parallel,
+    runId: "RUN-SMOKE-2",
     input: {
       objective: "paralelo",
       tasks: [
@@ -262,6 +270,7 @@ test("runner: oleadas, paralelismo, parentID y fallos en cadena", async () => {
   const failing = makeCtx({ fail: ["F1"] })
   const failedRun = await runOrchestration({
     ctx: failing,
+    runId: "RUN-SMOKE-3",
     input: {
       objective: "falla",
       tasks: [
@@ -282,6 +291,7 @@ test("runner: oleadas, paralelismo, parentID y fallos en cadena", async () => {
   }
   const errorRun = await runOrchestration({
     ctx: errorCtx,
+    runId: "RUN-SMOKE-4",
     input: {
       objective: "error",
       tasks: [
@@ -301,6 +311,7 @@ test("worktrees: create por tarea, sesión aislada, upstream y limpieza", async 
   const ctx = makeCtx({ delayMs: 10 })
   const run = await runOrchestration({
     ctx,
+    runId: "RUN-SMOKE-5",
     input: {
       objective: "worktrees",
       tasks: [
@@ -348,6 +359,7 @@ test("worktrees: la tarea fallida conserva su worktree", async () => {
   const ctx = makeCtx({ fail: ["F1"] })
   const run = await runOrchestration({
     ctx,
+    runId: "RUN-SMOKE-6",
     input: {
       objective: "fallo con worktree",
       tasks: [{ id: "F1", agent: "coder", objective: "x", worktree: true }],
@@ -371,6 +383,7 @@ test("abort: las tareas pendientes se omiten al cancelar el run", async () => {
   const control = { aborted: false, sessions: new Set<string>() }
   const run = await runOrchestration({
     ctx,
+    runId: "RUN-SMOKE-7",
     input: {
       objective: "abort",
       tasks: [
@@ -396,6 +409,7 @@ test("gates: acciones sensibles pasan por permission.assert", async () => {
   const ctx = makeCtx()
   const run = await runOrchestration({
     ctx,
+    runId: "RUN-SMOKE-8",
     input: {
       objective: "gate",
       tasks: [
@@ -425,6 +439,7 @@ test("gates: un gate denegado falla la tarea sin crear sesión", async () => {
 
   const run = await runOrchestration({
     ctx,
+    runId: "RUN-SMOKE-9",
     input: {
       objective: "gate denegado",
       tasks: [
@@ -441,6 +456,92 @@ test("gates: un gate denegado falla la tarea sin crear sesión", async () => {
   assert.ok(String(run.results[0]!.error).includes("Permiso denegado"))
   const created = (ctx as any).__created as any[]
   assert.equal(created.length, 0)
+})
+
+test("runId: el runner usa el ID canónico del llamador", async () => {
+  const ctx = makeCtx()
+  const run = await runOrchestration({
+    ctx,
+    runId: "RUN-CANON",
+    input: { objective: "id", tasks: [{ id: "R1", agent: "explorador", objective: "x" }] },
+    baseBranch: "dev",
+    workdir: "C:/repo",
+    keepSessions: true,
+  })
+  assert.equal(run.runId, "RUN-CANON")
+})
+
+test("sin reporte JSON → unconfirmed (no éxito)", async () => {
+  const ctx = makeCtx({ noReport: ["N1"] })
+  const run = await runOrchestration({
+    ctx,
+    runId: "RUN-NOREPORT",
+    input: { objective: "noreport", tasks: [{ id: "N1", agent: "contexto", objective: "x" }] },
+    baseBranch: "dev",
+    workdir: "C:/repo",
+    keepSessions: true,
+  })
+  assert.equal(run.results[0]!.status, "unconfirmed")
+})
+
+test("extractReport: toma el último bloque JSON (el reporte, no el contrato)", () => {
+  const text = [
+    "## Contrato de entrada",
+    "```json",
+    '{"task_id":"T","target_agent":"coder"}',
+    "```",
+    "## Reporte",
+    "```json",
+    '{"task_id":"T","status":"success","summary":"ok"}',
+    "```",
+  ].join("\n")
+
+  const report = extractReport(text) as any
+  assert.equal(report.status, "success")
+  assert.equal(report.summary, "ok")
+})
+
+test("worktreeName trunca nombres largos (Windows)", async () => {
+  const ctx = makeCtx()
+  await runOrchestration({
+    ctx,
+    runId: "R".repeat(80),
+    input: {
+      objective: "x",
+      tasks: [{ id: "T".repeat(120), agent: "coder", objective: "x", worktree: true }],
+    },
+    baseBranch: "dev",
+    workdir: "C:/repo",
+    keepSessions: true,
+    projectID: "proj_test",
+    worktreeParent: "C:/worktrees",
+  })
+
+  const created = (ctx as any).__worktrees.created as any[]
+  assert.equal(created.length, 1)
+  assert.ok(created[0].name.length <= 60, `nombre demasiado largo: ${created[0].name.length}`)
+})
+
+test("permisos: git_commit, strict_scope y globs", () => {
+  const rules = buildSessionPermissions(
+    {
+      id: "P1",
+      agent: "coder",
+      objective: "x",
+      strict_scope: true,
+      permissions: { git_commit: false },
+      scope: { allowed_files: ["src/**"] },
+    },
+    "C:/repo",
+  )
+
+  assert.ok(rules.some((rule) => rule.action === "bash" && rule.resource === "git commit*" && rule.effect === "deny"))
+  assert.ok(rules.some((rule) => rule.action === "edit" && rule.resource === "src/**" && rule.effect === "allow"))
+  assert.ok(!rules.some((rule) => rule.resource === "C:/repo/src/**"), "los globs no deben duplicarse como ruta absoluta")
+  assert.ok(
+    rules.some((rule) => rule.action === "bash" && rule.resource === "*" && rule.effect === "deny"),
+    "strict_scope sin bash habilitado debe denegar shell",
+  )
 })
 
 test("historial: guardar, recuperar y listar runs", async () => {
