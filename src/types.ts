@@ -19,6 +19,12 @@ export interface TaskPermissions {
   write_files?: boolean
   execute_bash?: boolean
   git_commit?: boolean
+  /** Acción sensible: pasa por el gate de permiso (permission.assert) antes de ejecutarse. */
+  push_to_remote?: boolean
+  /** Acción sensible: pasa por el gate de permiso. */
+  create_pull_request?: boolean
+  /** Acción sensible: pasa por el gate de permiso. */
+  production_deploy?: boolean
 }
 
 export interface TaskSpec {
@@ -100,6 +106,9 @@ export interface PermissionRule {
 export interface PluginCtx {
   options: Record<string, any>
   location: { directory: string; project?: { id?: string } }
+  permission: {
+    assert(input: any): Promise<void>
+  }
   worktree: {
     create(input: any): Promise<{ directory: string }>
     remove(input: any): Promise<void>

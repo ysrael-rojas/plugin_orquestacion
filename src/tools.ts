@@ -84,6 +84,18 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
                     write_files: { type: "boolean" },
                     execute_bash: { type: "boolean" },
                     git_commit: { type: "boolean" },
+                    push_to_remote: {
+                      type: "boolean",
+                      description: "Acción sensible: gate de permiso antes de permitir push al remoto.",
+                    },
+                    create_pull_request: {
+                      type: "boolean",
+                      description: "Acción sensible: gate de permiso antes de crear un PR.",
+                    },
+                    production_deploy: {
+                      type: "boolean",
+                      description: "Acción sensible: gate de permiso antes de desplegar a producción.",
+                    },
                   },
                   additionalProperties: false,
                 },
