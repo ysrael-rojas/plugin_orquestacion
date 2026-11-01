@@ -56,6 +56,8 @@ export interface OrchestrateInput {
   tasks: TaskSpec[]
   /** Si es true, conserva las sesiones hijas para inspección. */
   keepSessions?: boolean
+  /** Contexto adicional de la orquestación (usado en el documento de plan). */
+  context?: TaskContextInfo
 }
 
 export type TaskStatus = "succeeded" | "failed" | "skipped" | "unconfirmed"
@@ -91,12 +93,41 @@ export interface RunRecord {
   inFlight?: string[]
   results: TaskResult[]
   error?: string
+  /** Advertencias acumuladas de escrituras best-effort del documento de plan. */
+  planDocWarnings?: string[]
 }
 
 /** Estado compartido para cancelar un run en curso. */
 export interface RunControl {
   aborted: boolean
   sessions: Set<string>
+  /** Estado del documento de plan, si está activo para este run. */
+  planDocs?: PlanDocsState
+  /** Advertencias acumuladas de escrituras best-effort del documento de plan. */
+  planDocWarnings?: string[]
+}
+
+export interface PlanDocsTaskSpec {
+  id: string
+  agent: string
+  objective: string
+  branch?: string
+  dependsOn?: string[]
+}
+
+export interface PlanDocsState {
+  workdir: string
+  folder: string
+  runId: string
+  objective: string
+  baseBranch: string
+  startedAt: string
+  finishedAt?: string
+  status: RunRecord["status"]
+  contextSummary?: string
+  tasks: PlanDocsTaskSpec[]
+  results: TaskResult[]
+  inFlight: string[]
 }
 
 export interface PermissionRule {
@@ -165,4 +196,6 @@ export interface PluginOptions {
   taskTimeoutMs?: number
   /** Cuántos runs conservar en el historial (entero positivo, default 50). */
   runHistory?: number
+  /** Si es `false`, desactiva el documento de plan; si es string, carpeta relativa destino. */
+  planDocs?: boolean | string
 }

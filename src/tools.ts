@@ -1,8 +1,9 @@
 import { AGENTS } from "./agents"
 import { detectEngram, formatEngramStatus } from "./engram"
 import { getRun, pruneRuns, recentRuns, saveRun } from "./history"
+import { planDocsRelativePath, statusIcon, writePlanDocs } from "./plandocs"
 import { runOrchestration, validateTasks } from "./runner"
-import type { OrchestrateInput, PluginCtx, RunControl, RunRecord, TaskResult } from "./types"
+import type { OrchestrateInput, PlanDocsState, PluginCtx, RunControl, RunRecord, TaskResult } from "./types"
 
 /** Runs activos en esta instancia del plugin (para aiapaec_run_abort). */
 const activeRuns = new Map<string, RunControl>()
@@ -14,6 +15,8 @@ export interface ToolSettings {
   worktreeParent?: string
   taskTimeoutMs?: number
   runHistory: number
+  /** Carpeta relativa destino del plan; `false` desactiva el documento. */
+  planDocs: string | false
   workdir: string
 }
 
@@ -129,6 +132,14 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             type: "boolean",
             description: "Si es true, conserva las sesiones hijas para inspección.",
           },
+          context: {
+            type: "object",
+            properties: {
+              summary: { type: "string" },
+              engram_ids: { type: "array", items: { type: "string" } },
+            },
+            additionalProperties: false,
+          },
           cleanupWorktrees: {
             type: "boolean",
             description:
@@ -202,7 +213,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           }
         }
 
-        const control: RunControl = { aborted: false, sessions: new Set() }
+        const control: RunControl = { aborted: false, sessions: new Set(), planDocWarnings: [] }
         activeRuns.set(runId, control)
 
         const inFlight: string[] = []
@@ -231,6 +242,40 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           }
         }
 
+        if (settings.planDocs !== false) {
+          const planDocsState: PlanDocsState = {
+            workdir: settings.workdir,
+            folder: settings.planDocs,
+            runId,
+            objective: payload.objective,
+            baseBranch: settings.baseBranch,
+            startedAt,
+            status: "running",
+            contextSummary: payload.context?.summary,
+            tasks: payload.tasks.map((task) => ({
+              id: task.id,
+              agent: task.agent,
+              objective: task.objective,
+              branch: task.branch,
+              dependsOn: task.dependsOn,
+            })),
+            results: [],
+            inFlight: [],
+          }
+          try {
+            await writePlanDocs(planDocsState)
+            control.planDocs = planDocsState
+          } catch (error) {
+            activeRuns.delete(runId)
+            return {
+              content: `❌ No se pudo inicializar el plan de documentación: ${
+                error instanceof Error ? error.message : String(error)
+              }. No se inició nada.`,
+              metadata: { ok: false, runId },
+            }
+          }
+        }
+
         const execution = runOrchestration({
           ctx,
           input: payload,
@@ -248,16 +293,43 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             latestResults = [...results]
             const finished = new Set(results.map((entry) => entry.taskId))
             const pending = inFlight.filter((id) => !finished.has(id))
+            if (control.planDocs) {
+              control.planDocs.results = [...results]
+              control.planDocs.inFlight = pending
+              try {
+                await writePlanDocs(control.planDocs)
+              } catch (error) {
+                addPlanDocWarning(control, control.planDocs.runId, error)
+              }
+            }
             try {
-              await saveRun(ctx, { ...base, results: [...results], inFlight: pending })
+              await saveRun(ctx, {
+                ...base,
+                results: [...results],
+                inFlight: pending,
+                planDocWarnings: control.planDocWarnings,
+              })
             } catch {
               // best-effort
             }
           },
           onTaskStart: async ({ taskId }) => {
             if (!inFlight.includes(taskId)) inFlight.push(taskId)
+            if (control.planDocs) {
+              control.planDocs.inFlight = [...inFlight]
+              try {
+                await writePlanDocs(control.planDocs)
+              } catch (error) {
+                addPlanDocWarning(control, control.planDocs.runId, error)
+              }
+            }
             try {
-              await saveRun(ctx, { ...base, results: [...latestResults], inFlight: [...inFlight] })
+              await saveRun(ctx, {
+                ...base,
+                results: [...latestResults],
+                inFlight: [...inFlight],
+                planDocWarnings: control.planDocWarnings,
+              })
             } catch {
               // best-effort
             }
@@ -270,6 +342,18 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
               finishedAt: result.finishedAt,
               status: control.aborted ? "aborted" : "completed",
               results: result.results,
+              planDocWarnings: control.planDocWarnings,
+            }
+            if (control.planDocs) {
+              control.planDocs.results = result.results
+              control.planDocs.inFlight = []
+              control.planDocs.status = record.status
+              control.planDocs.finishedAt = record.finishedAt
+              try {
+                await writePlanDocs(control.planDocs)
+              } catch (planError) {
+                addPlanDocWarning(control, control.planDocs.runId, planError)
+              }
             }
             try {
               await saveRun(ctx, record)
@@ -286,6 +370,18 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
               finishedAt: new Date().toISOString(),
               status: control.aborted ? "aborted" : "failed",
               error: error instanceof Error ? error.message : String(error),
+              planDocWarnings: control.planDocWarnings,
+            }
+            if (control.planDocs) {
+              control.planDocs.results = [...latestResults]
+              control.planDocs.inFlight = []
+              control.planDocs.status = record.status
+              control.planDocs.finishedAt = record.finishedAt
+              try {
+                await writePlanDocs(control.planDocs)
+              } catch (planError) {
+                addPlanDocWarning(control, control.planDocs.runId, planError)
+              }
             }
             try {
               await saveRun(ctx, record)
@@ -343,10 +439,29 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
               }
             }
             const orphan = record.status === "running" && !activeRuns.has(runId)
+            const planLine =
+              settings.planDocs !== false
+                ? `**Plan:** ${planDocsRelativePath({ folder: settings.planDocs, runId: record.runId })}`
+                : ""
+            const contentParts = [formatRunRecord(record)]
+            if (planLine) contentParts.push("", planLine)
+            if (orphan) {
+              contentParts.push(
+                "",
+                "⚠️ Sin proceso activo en este servicio (posible run huérfano tras un reinicio). Puedes cerrarlo con `aiapaec_run_abort`.",
+              )
+            }
+            if (record.planDocWarnings && record.planDocWarnings.length > 0) {
+              contentParts.push(
+                "",
+                "## ⚠️ Advertencias del documento de plan",
+                "",
+                ...record.planDocWarnings.map((warning) => `- ${warning}`),
+              )
+            }
+
             return {
-              content: orphan
-                ? `${formatRunRecord(record)}\n\n⚠️ Sin proceso activo en este servicio (posible run huérfano tras un reinicio). Puedes cerrarlo con \`aiapaec_run_abort\`.`
-                : formatRunRecord(record),
+              content: contentParts.join("\n"),
               metadata: {
                 ok: true,
                 runId: record.runId,
@@ -435,6 +550,17 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           }
         }
 
+        if (control.planDocs) {
+          control.planDocs.status = "aborted"
+          control.planDocs.finishedAt = new Date().toISOString()
+          control.planDocs.inFlight = []
+          try {
+            await writePlanDocs(control.planDocs)
+          } catch (error) {
+            addPlanDocWarning(control, control.planDocs.runId, error)
+          }
+        }
+
         return {
           content: [
             `⏹️ Abort solicitado para \`${runId}\`.`,
@@ -496,6 +622,12 @@ function generateRunId(): string {
   return `run-${new Date().toISOString().replace(/[:.]/g, "-")}`
 }
 
+function addPlanDocWarning(control: RunControl, runId: string, error: unknown): void {
+  const message = `[planDocs] No se pudo actualizar ${runId}: ${error instanceof Error ? error.message : String(error)}`
+  if (!control.planDocWarnings) control.planDocWarnings = []
+  control.planDocWarnings.push(message)
+}
+
 function normalizeRunId(raw?: string): string | undefined {
   if (typeof raw !== "string") return undefined
   const cleaned = raw
@@ -505,26 +637,6 @@ function normalizeRunId(raw?: string): string | undefined {
     .replace(/^[-.]+|[-.]+$/g, "")
     .slice(0, 80)
   return cleaned || undefined
-}
-
-function statusIcon(status: RunRecord["status"] | TaskResult["status"]): string {
-  switch (status) {
-    case "running":
-      return "⏳"
-    case "completed":
-    case "succeeded":
-      return "✅"
-    case "failed":
-      return "❌"
-    case "skipped":
-      return "⏭️"
-    case "unconfirmed":
-      return "⚠️"
-    case "aborted":
-      return "⏹️"
-    default:
-      return "•"
-  }
 }
 
 function escapeCell(value: string): string {

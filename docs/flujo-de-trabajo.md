@@ -13,6 +13,7 @@ Cómo se usa el plugin de orquestación en el día a día (v0.8.3).
 | **`aiapaec_run_abort`** | Cancela un run (interrumpe sesiones hijas; pendientes quedan `skipped`) |
 | **`/orquestar`** | Atajo: tu petición se convierte en plan de orquestación |
 | **`/aiapaec`** | Panel TUI: runs agrupados con objetivo y estado por tarea |
+| **`docs/plans/<runId>.md`** | Documento de plan vivo con contexto, tareas y avance |
 | **`gentle_engram_status`** | Diagnóstico de Engram (conectado / sin conexión / ausente) |
 
 ## Flujo
@@ -50,6 +51,7 @@ Con el agente **orquestador** (o `/orquestar`):
 - **Scope real**: `strict_scope` bloquea ediciones fuera de `allowed_files`; `forbidden_files`, `write_files`, `bash` y `git commit` son reglas `deny` reales.
 - **Validación**: sin reporte JSON con `status`, la tarea queda `unconfirmed` (⚠️) y sus dependientes no corren.
 - **Recuperación**: el run vive en el storage (`runs/<runId>`); si la llamada se interrumpe, `run_status` recupera el estado.
+- **Documento de plan**: cada run escribe `docs/plans/<runId>.md` con contexto, tabla de tareas y avance; se actualiza por oleada y se marca `aborted` al cancelar.
 - **Memoria**: las sesiones hijas llevan `parentID` (atribución al orquestador) y Engram guarda decisiones/hallazgos.
 
 ## Reglas de operación

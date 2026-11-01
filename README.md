@@ -239,10 +239,24 @@ Si el subagente no devuelve un reporte JSON con `status`, la tarea queda en esta
 | `taskTimeoutMs` | sin límite | Timeout por tarea en milisegundos; al vencer se interrumpe la sesión hija y la tarea falla. |
 | `runHistory` | `50` | Cuántos runs se conservan en el historial. Si el valor es inválido (no entero o ≤ 0) se usa `50`. |
 | `skills` | `true` | Si es `false`, desactiva el registro automático de skills desde `.agents/skills/`. |
+| `planDocs` | `true` | Si es `false`, desactiva el documento de plan; si es un string, cambia la carpeta destino relativa al repo. Se sanitiza: rechaza rutas absolutas, `..` y valores vacíos. |
 
 ## Informe de estado
 
 Cada orquestación se guarda en el storage del plugin (`runs/<runId>`) con objetivo, rama base, timestamps, estado (`running`/`completed`/`failed`/`aborted`) y resultados por tarea. El estado se actualiza al cerrar cada oleada, así que sobrevive a interrupciones del tool. Se conservan los **50 runs más recientes** por defecto (limpieza automática); configurable con la opción `runHistory`.
+
+## Documento de plan (`docs/plans/<runId>.md`)
+
+Cada run genera un Markdown vivo en `docs/plans/<runId>.md` (configurable con la opción `planDocs`):
+
+- Frontmatter YAML con `runId`, `objective`, `status`, `baseBranch`, `startedAt` y `finishedAt`.
+- Sección de **Contexto** con el resumen de la orquestación.
+- Tabla de tareas con ID, agente, estado (✅/❌/⏳/⏭️), rama y dependencias.
+- Línea de summary por tarea.
+
+El archivo se escribe al arrancar el run (fail-hard: si falla, el run no inicia) y se actualiza en cada oleada de forma best-effort (nunca rompe la orquestación). Al abortar un run se marca como `aborted`. `aiapaec_run_status` muestra la ruta del plan cuando está activo.
+
+Puedes desactivarlo con `planDocs: false` o cambiar la carpeta con `planDocs: "custom/planes"`. La ruta siempre es relativa al repo principal y se rechazan valores inseguros.
 
 ## Limitaciones conocidas (v0.8)
 
