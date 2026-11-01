@@ -22,6 +22,18 @@ export function buildSessionPermissions(task: TaskSpec, workdir: string): Permis
     rules.push({ action: "bash", resource: "*", effect: "deny" })
   }
 
+  const allowed = task.scope?.allowed_files ?? []
+  if (task.strict_scope === true && allowed.length > 0) {
+    rules.push({ action: "edit", resource: "*", effect: "deny" })
+    for (const file of allowed) {
+      rules.push({ action: "edit", resource: normalize(file), effect: "allow" })
+      if (!isAbsolute(file)) {
+        rules.push({ action: "edit", resource: normalize(join(workdir, file)), effect: "allow" })
+      }
+    }
+  }
+
+  // Denegaciones explícitas al final: la última regla coincidente gana.
   for (const file of task.scope?.forbidden_files ?? []) {
     rules.push({ action: "edit", resource: normalize(file), effect: "deny" })
     if (!isAbsolute(file)) {

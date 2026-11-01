@@ -35,6 +35,8 @@ export interface TaskSpec {
   scope?: TaskScope
   context?: TaskContextInfo
   permissions?: TaskPermissions
+  /** Si es true y hay allowed_files, solo se permite editar esos archivos. */
+  strict_scope?: boolean
   /** Override de modelo, formato "providerID/modelID". */
   model?: string
   metadata?: Record<string, unknown>

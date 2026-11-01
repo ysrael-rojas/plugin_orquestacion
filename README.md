@@ -199,7 +199,7 @@ Si el subagente no devuelve JSON válido, el runner conserva el texto como resum
 - `permissions.write_files: false` → regla `deny` real sobre `edit`.
 - `permissions.execute_bash: false` → regla `deny` real sobre `bash`.
 - `scope.forbidden_files` → reglas `deny` reales sobre `edit` (relativas y absolutas).
-- `scope.allowed_files` → se comunica en el prompt (advisory) en esta fase.
+- `scope.allowed_files` → advisory por defecto; con `strict_scope: true` se convierte en **bloqueo real**: `deny` global de `edit` + `allow` solo para los archivos listados.
 
 ## Git
 

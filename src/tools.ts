@@ -82,6 +82,11 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
                   },
                   additionalProperties: false,
                 },
+                strict_scope: {
+                  type: "boolean",
+                  description:
+                    "Si es true y hay allowed_files, bloquea la edición de cualquier archivo fuera de la lista.",
+                },
                 model: {
                   type: "string",
                   description: "Override de modelo, formato providerID/modelID.",

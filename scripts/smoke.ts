@@ -120,6 +120,33 @@ test("permisos de sesión: deny reales por archivo y flags", () => {
   assert.ok(rules.some((rule) => rule.resource === "C:/repo/src/config/db.ts"))
 })
 
+test("strict_scope convierte allowed_files en bloqueo real", () => {
+  const rules = buildSessionPermissions(
+    {
+      id: "T2",
+      agent: "coder",
+      objective: "x",
+      strict_scope: true,
+      scope: { allowed_files: ["src/a.ts"], forbidden_files: ["src/b.ts"] },
+    },
+    "C:/repo",
+  )
+
+  const denyAll = rules.findIndex(
+    (rule) => rule.action === "edit" && rule.resource === "*" && rule.effect === "deny",
+  )
+  const allowA = rules.findIndex(
+    (rule) => rule.action === "edit" && rule.resource === "src/a.ts" && rule.effect === "allow",
+  )
+  const denyB = rules.findIndex(
+    (rule) => rule.action === "edit" && rule.resource === "src/b.ts" && rule.effect === "deny",
+  )
+
+  assert.ok(denyAll >= 0, "debe existir deny global")
+  assert.ok(allowA > denyAll, "la allow debe ir después del deny global")
+  assert.ok(denyB > allowA, "la denegación explícita debe ir al final")
+})
+
 test("contratos: prompt con rama base y parseo tolerante del reporte", () => {
   const prompt = buildTaskPrompt({
     task: { id: "TASK-1", agent: "coder", objective: "implementar login" },
