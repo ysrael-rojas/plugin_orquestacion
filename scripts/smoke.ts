@@ -11,12 +11,24 @@ import type { PluginCtx, TaskSpec } from "../src/types"
 function makeCtx(options: { fail?: string[]; delayMs?: number } = {}): PluginCtx {
   let counter = 0
   const created: any[] = []
+  const prompts: Array<{ taskId: string; text: string }> = []
+  const worktreesCreated: any[] = []
+  const worktreesRemoved: any[] = []
   const sessions = new Map<string, { input: any; prompt?: string; messages: any[] }>()
   const storage = new Map<string, any>()
 
   const ctx: PluginCtx = {
     options: {},
-    location: { directory: "C:/repo" },
+    location: { directory: "C:/repo", project: { id: "proj_test" } },
+    worktree: {
+      async create(input: any) {
+        worktreesCreated.push(input)
+        return { directory: `C:/worktrees/${input.name}` }
+      },
+      async remove(input: any) {
+        worktreesRemoved.push(input)
+      },
+    },
     session: {
       async create(input: any) {
         created.push(input)
@@ -25,7 +37,9 @@ function makeCtx(options: { fail?: string[]; delayMs?: number } = {}): PluginCtx
         return { id }
       },
       async prompt({ sessionID, text }: any) {
-        sessions.get(sessionID)!.prompt = text
+        const session = sessions.get(sessionID)!
+        session.prompt = text
+        prompts.push({ taskId: session.input?.metadata?.taskId ?? "?", text })
       },
       async wait() {
         if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs))
@@ -81,6 +95,8 @@ function makeCtx(options: { fail?: string[]; delayMs?: number } = {}): PluginCtx
   }
 
   ;(ctx as any).__created = created
+  ;(ctx as any).__prompts = prompts
+  ;(ctx as any).__worktrees = { created: worktreesCreated, removed: worktreesRemoved }
   return ctx
 }
 
@@ -272,6 +288,75 @@ test("runner: oleadas, paralelismo, parentID y fallos en cadena", async () => {
   })
   assert.equal(errorRun.results[0]!.status, "failed")
   assert.equal(errorRun.results[1]!.status, "skipped")
+})
+
+test("worktrees: create por tarea, sesión aislada, upstream y limpieza", async () => {
+  const ctx = makeCtx({ delayMs: 10 })
+  const run = await runOrchestration({
+    ctx,
+    input: {
+      objective: "worktrees",
+      tasks: [
+        { id: "W1", agent: "coder", objective: "a", worktree: true },
+        { id: "W2", agent: "qa", objective: "b", dependsOn: ["W1"] },
+      ],
+    },
+    baseBranch: "dev",
+    workdir: "C:/repo",
+    keepSessions: true,
+    projectID: "proj_test",
+    worktreeParent: "C:/worktrees",
+    cleanupWorktrees: true,
+  })
+
+  assert.equal(run.results.length, 2)
+  assert.ok(run.results.every((entry) => entry.status === "succeeded"))
+
+  const wt = (ctx as any).__worktrees as { created: any[]; removed: any[] }
+  assert.equal(wt.created.length, 1)
+  assert.equal(wt.created[0].projectID, "proj_test")
+  assert.equal(wt.created[0].branch, "dev")
+  assert.equal(wt.created[0].directory, "C:/worktrees")
+
+  const worktreeDir = `C:/worktrees/${wt.created[0].name}`
+  assert.equal(run.results[0]!.worktreeDirectory, worktreeDir)
+
+  const sessions = (ctx as any).__created as any[]
+  const w1Session = sessions.find((session) => session.metadata?.taskId === "W1")
+  assert.equal(w1Session.location.directory, worktreeDir)
+
+  const w2Session = sessions.find((session) => session.metadata?.taskId === "W2")
+  assert.equal(w2Session.location, undefined)
+
+  const prompts = (ctx as any).__prompts as Array<{ taskId: string; text: string }>
+  const w2Prompt = prompts.find((entry) => entry.taskId === "W2")!
+  assert.ok(w2Prompt.text.includes(worktreeDir), "el dependiente debe recibir el worktree upstream")
+
+  assert.equal(wt.removed.length, 1)
+  assert.equal(wt.removed[0].directory, worktreeDir)
+  assert.equal(wt.removed[0].force, false)
+})
+
+test("worktrees: la tarea fallida conserva su worktree", async () => {
+  const ctx = makeCtx({ fail: ["F1"] })
+  const run = await runOrchestration({
+    ctx,
+    input: {
+      objective: "fallo con worktree",
+      tasks: [{ id: "F1", agent: "coder", objective: "x", worktree: true }],
+    },
+    baseBranch: "dev",
+    workdir: "C:/repo",
+    keepSessions: true,
+    projectID: "proj_test",
+    worktreeParent: "C:/worktrees",
+    cleanupWorktrees: true,
+  })
+
+  assert.equal(run.results[0]!.status, "failed")
+  const wt = (ctx as any).__worktrees as { created: any[]; removed: any[] }
+  assert.equal(wt.created.length, 1)
+  assert.equal(wt.removed.length, 0, "un worktree de tarea fallida no debe eliminarse")
 })
 
 test("historial: guardar, recuperar y listar runs", async () => {

@@ -96,6 +96,16 @@ La herramienta se ejecuta **en segundo plano**: devuelve un `runId` de inmediato
 
 Para planes muy cortos se puede usar `wait: true` en `aiapaec_orchestrate`: espera el resultado completo y lo devuelve en la misma llamada.
 
+### Worktrees por tarea (Fase 2)
+
+Marca una tarea con `worktree: true` y el runner crea un **git worktree** en `<padre>/worktrees/<runId>-<taskId>` desde la rama base: la sesión hija corre con ese directorio como cwd, así que dos coder pueden trabajar **en paralelo** sin conflictos de rama ni de archivos.
+
+- Los dependientes (qa/deployer) reciben automáticamente la ruta del worktree y la rama en su prompt.
+- `cleanupWorktrees: true` (opción del plugin o del run) elimina los worktrees de tareas exitosas al terminar; **los de tareas fallidas se conservan** para inspección.
+- Ruta por defecto: `<padre del repo>/worktrees` (configurable con `worktreeParent`).
+- El coder crea su rama `feat/<task_id>` dentro del worktree, que arranca en HEAD detached sobre la rama base.
+- Los worktrees **no heredan `node_modules`** (ignorado por git): el subagente debe ejecutar `npm install` dentro del worktree antes de correr pruebas con dependencias.
+
 ## Ejemplo de uso
 
 A continuación se muestra un plan realista y minimalista para `aiapaec_orchestrate`. El objetivo es implementar un endpoint de login con JWT; las tareas de contexto y exploración corren en paralelo, el coder espera a ambas, el QA revisa el código y el deployer prepara el PR.
@@ -213,18 +223,21 @@ Si el subagente no devuelve JSON válido, el runner conserva el texto como resum
 |---|---|---|
 | `baseBranch` | `"dev"` | Rama base desde la que se derivan las ramas de tarea. |
 | `cleanupSessions` | `false` | Si es `true`, elimina las sesiones hijas al terminar (por defecto se conservan para inspección). |
+| `cleanupWorktrees` | `false` | Si es `true`, elimina los worktrees de tareas exitosas al terminar el run (los fallidos se conservan). |
+| `worktreeParent` | `<padre del repo>/worktrees` | Directorio padre donde se crean los worktrees. |
 
 ## Informe de estado
 
 Cada orquestación se guarda en el storage del plugin (`runs/<runId>`) con objetivo, rama base, timestamps, estado (`running`/`completed`/`failed`) y resultados por tarea. El estado se actualiza al cerrar cada oleada, así que sobrevive a interrupciones del tool.
 
-## Limitaciones conocidas (v0.3)
+## Limitaciones conocidas (v0.4)
 
 - Sin TUI: el estado se consulta con `aiapaec_run_status` y en las sesiones hijas.
 - `allowed_files` es advisory por defecto; usa `strict_scope: true` en la tarea para bloquearlo de verdad.
+- Los worktrees requieren que la ubicación exponga `projectID` (si no, la tarea con `worktree: true` falla rápido).
 - Engram se integra vía MCP (los subagentes usan `mem_*` si están conectados).
 - El bloque `config/agents.json` se genera desde `src/agents.ts` con `npm run agents:sync` (no editar a mano).
-- El modo segundo plano no aborta sesiones hijas si el usuario cancela: el run termina igual (abort explícito queda para v0.4).
+- El modo segundo plano no aborta sesiones hijas ni worktrees si el usuario cancela (abort explícito queda para v0.5).
 
 ## Desarrollo
 

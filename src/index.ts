@@ -29,9 +29,20 @@ export default Plugin.define({
         : "dev"
 
     const cleanupSessions = options.cleanupSessions === true
+    const cleanupWorktrees = options.cleanupWorktrees === true
+    const worktreeParent =
+      typeof options.worktreeParent === "string" && options.worktreeParent.trim()
+        ? options.worktreeParent.trim()
+        : undefined
     const workdir = ctx.location?.directory ?? process.cwd()
 
-    const tools = await registerTools(ctx, { baseBranch, cleanupSessions, workdir })
+    const tools = await registerTools(ctx, {
+      baseBranch,
+      cleanupSessions,
+      cleanupWorktrees,
+      worktreeParent,
+      workdir,
+    })
 
     const commands = await ctx.command.transform((editor: any) => {
       editor.add({

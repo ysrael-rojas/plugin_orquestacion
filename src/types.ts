@@ -37,6 +37,8 @@ export interface TaskSpec {
   permissions?: TaskPermissions
   /** Si es true y hay allowed_files, solo se permite editar esos archivos. */
   strict_scope?: boolean
+  /** Ejecuta la tarea en un git worktree aislado (requiere projectID). */
+  worktree?: boolean
   /** Override de modelo, formato "providerID/modelID". */
   model?: string
   metadata?: Record<string, unknown>
@@ -57,6 +59,7 @@ export interface TaskResult {
   status: TaskStatus
   sessionID?: string
   branch?: string
+  worktreeDirectory?: string
   summary?: string
   report?: unknown
   text?: string
@@ -90,7 +93,11 @@ export interface PermissionRule {
  */
 export interface PluginCtx {
   options: Record<string, any>
-  location: { directory: string }
+  location: { directory: string; project?: { id?: string } }
+  worktree: {
+    create(input: any): Promise<{ directory: string }>
+    remove(input: any): Promise<void>
+  }
   session: {
     create(input: any): Promise<{ id: string }>
     prompt(input: any): Promise<unknown>
