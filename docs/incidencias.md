@@ -1,7 +1,7 @@
 # Incidencias conocidas
 
-Registro de incidencias pendientes de investigación. Creado como respaldo porque
-Engram MCP no está conectado y `mem_save` falla (ver incidencia #2).
+Registro de incidencias detectadas en la primera prueba real de orquestación.
+**Estado: ambas resueltas en v0.2 (2026-11-01).**
 
 ## 1. `aiapaec_orchestrate` (antes `gentle_orchestrate`) pierde el reporte de retorno — 2026-10-31
 
@@ -19,8 +19,22 @@ tareas corrieron, lo que invita a re-lanzarlas innecesariamente.
 2. Como fallback, delegar al subagente directo (`subagent` con agente
    `qa`/`coder`/etc.), que sí devuelve reporte.
 
-**Posible causa a investigar:** canal de retorno del tool (`src/tools.ts`,
-`src/runner.ts`), p. ej. timeout del tool o tamaño del reporte.
+**Causa raíz:** la herramienta era síncrona y mantenía la llamada abierta durante
+minutos; si el paso del agente padre se interrumpía (timeout del proveedor o
+interrupción), OpenCode descartaba el resultado. Como el `runId` solo viajaba en
+el resultado perdido y no había estado persistente, no había forma de recuperar
+el reporte.
+
+**Resuelto (v0.2, commit `b8c4898`):**
+- `aiapaec_orchestrate` corre en **segundo plano** y devuelve el `runId` de
+  inmediato; el resultado ya no depende del canal del tool.
+- Estado persistente por run en `ctx.storage` (`runs/<runId>`), actualizado al
+  cerrar cada oleada.
+- Nueva herramienta `aiapaec_run_status` para consultar el avance o recuperar el
+  reporte consolidado (también lista los runs recientes).
+- `runId` opcional elegido por el orquestador → recuperación determinista.
+- Prompt del orquestador actualizado: iniciar → sondear → consolidar; nunca
+  relanzar sin verificar.
 
 ## 2. `mem_save` de Engram falla sin sesión autoritativa — 2026-10-31
 
@@ -39,3 +53,20 @@ disponible. Servidor MCP registrado pero no conectado."
 **Mitigación mientras se corrige:** registrar decisiones importantes como
 archivos en este repo (este documento es el primer ejemplo) y entregar la
 respuesta al usuario igualmente — el fallo de memoria nunca bloquea.
+
+**Causa raíz y resolución (2026-11-01, v0.2):**
+1. **Bug en la detección del estado MCP** (commit `a4175ec`): el estado real de
+   OpenCode V2 es `{ status: "connected" }`; `describeStatus` devolvía el nombre
+   de la clave en vez de su valor, así que `gentle_engram_status` reportaba
+   "no conectado" aunque el servidor estuviera sano. El smoke test usaba una
+   forma inventada del estado; ahora valida contra la forma real
+   (`{ data: [{ name, status: { status: "connected" } }] }`).
+2. **Proceso `engram serve` huérfano**: había un serve del 13-oct (PID 15560)
+   conviviendo con el MCP actual (PID 27724). Engram solo adopta un servidor
+   local con identidad coincidente; el huérfano impedía el registro de las
+   sesiones nuevas y `mem_save` fallaba cerrado. Se terminó el proceso y se dejó
+   un `serve` fresco del binario actual.
+3. **`mcp.json` de VS Code inválido** (vacío): corregido a `{}`. Era el único
+   error restante de `engram doctor`.
+4. Verificación: `engram doctor` → **ok (0 errores)** · `opencode mcp list` →
+   `engram connected` · `mem_save` operativo desde sesiones registradas.
