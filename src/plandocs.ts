@@ -123,7 +123,8 @@ function taskStatusForPlan(state: PlanDocsState, taskId: string): TaskStatus | "
   return "skipped"
 }
 
-function statusIcon(status: RunRecord["status"] | TaskStatus | "running"): string {
+/** Icono visual para un estado de run o tarea. */
+export function statusIcon(status: RunRecord["status"] | TaskStatus | "running"): string {
   switch (status) {
     case "running":
       return "⏳"

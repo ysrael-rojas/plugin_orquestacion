@@ -1,7 +1,7 @@
 import { AGENTS } from "./agents"
 import { detectEngram, formatEngramStatus } from "./engram"
 import { getRun, pruneRuns, recentRuns, saveRun } from "./history"
-import { planDocsRelativePath, writePlanDocs } from "./plandocs"
+import { planDocsRelativePath, statusIcon, writePlanDocs } from "./plandocs"
 import { runOrchestration, validateTasks } from "./runner"
 import type { OrchestrateInput, PlanDocsState, PluginCtx, RunControl, RunRecord, TaskResult } from "./types"
 
@@ -213,7 +213,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           }
         }
 
-        const control: RunControl = { aborted: false, sessions: new Set() }
+        const control: RunControl = { aborted: false, sessions: new Set(), planDocWarnings: [] }
         activeRuns.set(runId, control)
 
         const inFlight: string[] = []
@@ -299,11 +299,16 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
               try {
                 await writePlanDocs(control.planDocs)
               } catch (error) {
-                console.warn(`[planDocs] No se pudo actualizar ${control.planDocs.runId}: ${error instanceof Error ? error.message : String(error)}`)
+                addPlanDocWarning(control, control.planDocs.runId, error)
               }
             }
             try {
-              await saveRun(ctx, { ...base, results: [...results], inFlight: pending })
+              await saveRun(ctx, {
+                ...base,
+                results: [...results],
+                inFlight: pending,
+                planDocWarnings: control.planDocWarnings,
+              })
             } catch {
               // best-effort
             }
@@ -315,11 +320,16 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
               try {
                 await writePlanDocs(control.planDocs)
               } catch (error) {
-                console.warn(`[planDocs] No se pudo actualizar ${control.planDocs.runId}: ${error instanceof Error ? error.message : String(error)}`)
+                addPlanDocWarning(control, control.planDocs.runId, error)
               }
             }
             try {
-              await saveRun(ctx, { ...base, results: [...latestResults], inFlight: [...inFlight] })
+              await saveRun(ctx, {
+                ...base,
+                results: [...latestResults],
+                inFlight: [...inFlight],
+                planDocWarnings: control.planDocWarnings,
+              })
             } catch {
               // best-effort
             }
@@ -332,6 +342,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
               finishedAt: result.finishedAt,
               status: control.aborted ? "aborted" : "completed",
               results: result.results,
+              planDocWarnings: control.planDocWarnings,
             }
             if (control.planDocs) {
               control.planDocs.results = result.results
@@ -341,11 +352,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
               try {
                 await writePlanDocs(control.planDocs)
               } catch (planError) {
-                console.warn(
-                  `[planDocs] No se pudo actualizar ${control.planDocs.runId}: ${
-                    planError instanceof Error ? planError.message : String(planError)
-                  }`,
-                )
+                addPlanDocWarning(control, control.planDocs.runId, planError)
               }
             }
             try {
@@ -363,6 +370,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
               finishedAt: new Date().toISOString(),
               status: control.aborted ? "aborted" : "failed",
               error: error instanceof Error ? error.message : String(error),
+              planDocWarnings: control.planDocWarnings,
             }
             if (control.planDocs) {
               control.planDocs.results = [...latestResults]
@@ -372,11 +380,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
               try {
                 await writePlanDocs(control.planDocs)
               } catch (planError) {
-                console.warn(
-                  `[planDocs] No se pudo actualizar ${control.planDocs.runId}: ${
-                    planError instanceof Error ? planError.message : String(planError)
-                  }`,
-                )
+                addPlanDocWarning(control, control.planDocs.runId, planError)
               }
             }
             try {
@@ -445,6 +449,14 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
               contentParts.push(
                 "",
                 "⚠️ Sin proceso activo en este servicio (posible run huérfano tras un reinicio). Puedes cerrarlo con `aiapaec_run_abort`.",
+              )
+            }
+            if (record.planDocWarnings && record.planDocWarnings.length > 0) {
+              contentParts.push(
+                "",
+                "## ⚠️ Advertencias del documento de plan",
+                "",
+                ...record.planDocWarnings.map((warning) => `- ${warning}`),
               )
             }
 
@@ -545,11 +557,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           try {
             await writePlanDocs(control.planDocs)
           } catch (error) {
-            console.warn(
-              `[planDocs] No se pudo marcar ${control.planDocs.runId} como aborted: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-            )
+            addPlanDocWarning(control, control.planDocs.runId, error)
           }
         }
 
@@ -614,6 +622,12 @@ function generateRunId(): string {
   return `run-${new Date().toISOString().replace(/[:.]/g, "-")}`
 }
 
+function addPlanDocWarning(control: RunControl, runId: string, error: unknown): void {
+  const message = `[planDocs] No se pudo actualizar ${runId}: ${error instanceof Error ? error.message : String(error)}`
+  if (!control.planDocWarnings) control.planDocWarnings = []
+  control.planDocWarnings.push(message)
+}
+
 function normalizeRunId(raw?: string): string | undefined {
   if (typeof raw !== "string") return undefined
   const cleaned = raw
@@ -623,26 +637,6 @@ function normalizeRunId(raw?: string): string | undefined {
     .replace(/^[-.]+|[-.]+$/g, "")
     .slice(0, 80)
   return cleaned || undefined
-}
-
-function statusIcon(status: RunRecord["status"] | TaskResult["status"]): string {
-  switch (status) {
-    case "running":
-      return "⏳"
-    case "completed":
-    case "succeeded":
-      return "✅"
-    case "failed":
-      return "❌"
-    case "skipped":
-      return "⏭️"
-    case "unconfirmed":
-      return "⚠️"
-    case "aborted":
-      return "⏹️"
-    default:
-      return "•"
-  }
 }
 
 function escapeCell(value: string): string {
