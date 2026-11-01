@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import path from "node:path"
 import { test } from "node:test"
 
 import { buildTaskPrompt, extractReport } from "../src/contracts"
@@ -6,7 +7,9 @@ import { detectEngram } from "../src/engram"
 import { getRun, pruneRuns, recentRuns, saveRun } from "../src/history"
 import { buildSessionPermissions } from "../src/permissions"
 import { runOrchestration, planWaves } from "../src/runner"
+import plugin from "../src/index"
 import { registerTools } from "../src/tools"
+import { registerSkills } from "../src/skills"
 import type { PluginCtx, TaskSpec } from "../src/types"
 
 function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string[] } = {}): PluginCtx {
@@ -827,4 +830,86 @@ test("tools: runHistory se conecta de extremo a extremo", async () => {
   assert.equal(runs.length, 2, "con runHistory=2 deben quedar los dos runs más recientes")
   assert.equal(runs[0]!.runId, "RUN-E2E-2")
   assert.equal(runs[1]!.runId, "RUN-E2E-1")
+})
+
+test("skills: registra grilling y grill-me desde .agents/skills/", async () => {
+  const ctx = makeCtx()
+  const added: any[] = []
+  ;(ctx as any).skill = {
+    async transform(callback: any) {
+      const editor = { add: (skill: any) => added.push(skill) }
+      callback(editor)
+      return { dispose: async () => {} }
+    },
+  }
+
+  await registerSkills(ctx, { workdir: process.cwd() })
+
+  const ids = added.map((skill) => skill.id).sort()
+  assert.deepEqual(ids, ["grill-me", "grilling"])
+
+  const grilling = added.find((skill) => skill.id === "grilling")
+  const grillMe = added.find((skill) => skill.id === "grill-me")
+
+  assert.ok(grilling, "debe existir la skill grilling")
+  assert.ok(grillMe, "debe existir la skill grill-me")
+
+  assert.ok(grilling.content.includes("design tree"), "el contenido de grilling debe incluir su cuerpo markdown")
+  assert.equal(grilling.autoinvoke, undefined, "grilling es autoinvocable por defecto")
+  assert.equal(grillMe.autoinvoke, false, "grill-me debe deshabilitar la autoinvocación")
+  assert.equal(grillMe.path, path.join(process.cwd(), ".agents", "skills", "grill-me", "SKILL.md"))
+})
+
+test("skills: option skills:false no registra nada", async () => {
+  const ctx = makeCtx()
+  let called = false
+  ;(ctx as any).skill = {
+    async transform() {
+      called = true
+      return { dispose: async () => {} }
+    },
+  }
+
+  await registerSkills(ctx, { enabled: false, workdir: process.cwd() })
+  assert.equal(called, false, "no debe llamar a ctx.skill.transform cuando skills:false")
+})
+
+test("skills: degradación graceful cuando ctx.skill no existe", async () => {
+  const commands: any[] = []
+  const tools: any[] = []
+  const warnings: string[] = []
+
+  const ctx = makeCtx()
+  ctx.command.transform = async (callback: any) => {
+    callback({ add: (command: any) => commands.push(command) })
+    return { dispose: async () => {} }
+  }
+  ctx.tool.transform = async (callback: any) => {
+    callback({
+      namespace() {},
+      add: (tool: any) => tools.push(tool),
+    })
+    return { dispose: async () => {} }
+  }
+
+  const originalWarn = console.warn
+  console.warn = (...args: any[]) => {
+    warnings.push(args.join(" "))
+  }
+
+  let dispose: unknown
+  try {
+    const setup = (plugin as { setup: (context: PluginCtx) => Promise<() => Promise<void>> }).setup
+    dispose = await setup(ctx)
+  } finally {
+    console.warn = originalWarn
+  }
+
+  assert.equal(typeof dispose, "function", "el setup debe completarse y devolver cleanup")
+  assert.ok(commands.length >= 2, "debe registrar los comandos del plugin")
+  assert.ok(tools.length >= 1, "debe registrar las tools del plugin")
+  assert.ok(
+    warnings.some((warning) => warning.includes("ctx.skill.transform no está disponible")),
+    "debe advertir la degradación cuando ctx.skill falta",
+  )
 })

@@ -4,7 +4,7 @@ Plugin TypeScript ESM para OpenCode V2 (arquitectura "Aiapaec"). OpenCode carga 
 
 ## Comandos
 
-- `npm test` — lint (Biome) + typecheck + bundle de pruebas con esbuild + `node --test` (24 pruebas, ~1 s). No necesita OpenCode corriendo.
+- `npm test` — lint (Biome) + typecheck + bundle de pruebas con esbuild + `node --test` (29 pruebas, ~1 s). No necesita OpenCode corriendo.
 - `npm run lint` — solo Biome (`biome.json`; `noExplicitAny`, `noNonNullAssertion` y `useOptionalChain` desactivadas por estilo del repo).
 - `npm run typecheck` — solo `tsc --noEmit` (no cubre `scripts/`).
 - `npm run agents:sync` — regenera `config/agents.json` desde `src/agents.ts`.
@@ -17,9 +17,10 @@ Plugin TypeScript ESM para OpenCode V2 (arquitectura "Aiapaec"). OpenCode carga 
 
 ## Arquitectura (lo no obvio)
 
-- `src/index.ts` es el único entrypoint (`Plugin.define`, id `plugin-de-orquestacion-para-opencode`). Registra los namespaces `aiapaec` (orquestación) y `gentle` (solo `engram_status`), y el comando `/engram-status`.
+- `src/index.ts` es el único entrypoint (`Plugin.define`, id `plugin-de-orquestacion-para-opencode`). Registra los namespaces `aiapaec` (orquestación) y `gentle` (solo `engram_status`), el comando `/engram-status`, y las skills del catálogo `.agents/skills/` vía `ctx.skill.transform` -> `SkillEditor.add`.
 - Flujo: `aiapaec_orchestrate` inicia un run en segundo plano y devuelve `runId`; `runner.ts` ejecuta oleadas (por `dependsOn`) con `Promise.allSettled`; cada tarea crea una sesión hija con `parentID`; el avance se persiste en `ctx.storage` (`runs/<runId>`) y se consulta con `aiapaec_run_status`.
 - Los agentes **no se pueden crear desde el plugin** (la API V2 no lo permite): viven en `opencode.json` → `agents`. `config/agents.json` es **generado** desde `src/agents.ts`; no editarlo a mano.
+- **Catálogo de skills**: la fuente única de verdad está en `.agents/skills/` (hoy `grilling` y `grill-me`). Cada subdirectorio es el ID de la skill y contiene un `SKILL.md` con frontmatter (`name`, `description`, `disable-model-invocation`). Al cargar el plugin se registran automáticamente; `disable-model-invocation: true` se traduce a `autoinvoke: false` (solo invocable explícitamente). Se puede desactivar con la opción `skills: false`.
 - Si cambias el nombre de una herramienta, actualiza también sus referencias en los prompts de `src/agents.ts` y regenera con `npm run agents:sync`.
 - Tareas con `worktree: true` corren en un **git worktree aislado** (`<padre>/worktrees/<runId>-<taskId>`): la sesión hija usa `location.directory` = worktree y los dependientes reciben esa ruta en el prompt. `cleanupWorktrees` borra los de tareas exitosas; los fallidos se conservan.
 - Parte TUI en `src/tui.ts` (export `./tui`): comando `/aiapaec` y de paleta; usa diálogos del TUI (sin JSX/OpenTUI) y agrupa sesiones hijas por `runId` desde su metadata.
@@ -50,5 +51,6 @@ Plugin TypeScript ESM para OpenCode V2 (arquitectura "Aiapaec"). OpenCode carga 
 
 ## Configuración del plugin
 
-- Opciones: `baseBranch` (default `dev`), `cleanupSessions` (default `false`).
+- Opciones: `baseBranch` (default `dev`), `cleanupSessions` (default `false`), `skills` (default `true`).
+- `skills: false` desactiva el registro automático de skills del catálogo `.agents/skills/`.
 - Se carga desde `opencode.json` global: `plugins: ["C:/dev/plugin_orquestacion"]` + bloque `agents`.

@@ -33,7 +33,8 @@ También acepta forma con opciones:
       "package": "C:/dev/plugin_orquestacion",
       "options": {
         "baseBranch": "dev",
-        "cleanupSessions": false
+        "cleanupSessions": false,
+        "skills": true
       }
     }
   ]
@@ -237,6 +238,7 @@ Si el subagente no devuelve un reporte JSON con `status`, la tarea queda en esta
 | `worktreeParent` | `<padre del repo>/worktrees` | Directorio padre donde se crean los worktrees. |
 | `taskTimeoutMs` | sin límite | Timeout por tarea en milisegundos; al vencer se interrumpe la sesión hija y la tarea falla. |
 | `runHistory` | `50` | Cuántos runs se conservan en el historial. Si el valor es inválido (no entero o ≤ 0) se usa `50`. |
+| `skills` | `true` | Si es `false`, desactiva el registro automático de skills desde `.agents/skills/`. |
 
 ## Informe de estado
 
@@ -255,6 +257,19 @@ Cada orquestación se guarda en el storage del plugin (`runs/<runId>`) con objet
 ## TUI
 
 Al cargarse, la parte TUI registra el comando **`/aiapaec`** (también en la paleta como "Aiapaec: runs de orquestación"): lista los runs agrupados por `runId`, con objetivo y estado por tarea. Se calcula a partir de las sesiones hijas (`metadata.orquestacion`), sin backend adicional.
+
+## Skills del catálogo `.agents/skills/`
+
+Al cargarse, el plugin registra automáticamente las skills que encuentre bajo `.agents/skills/` (fuente única de verdad del catálogo):
+
+- Cada subdirectorio es el ID de la skill (por ejemplo `grilling`, `grill-me`).
+- Dentro debe existir un `SKILL.md` con frontmatter YAML:
+  - `name`: nombre visible de la skill.
+  - `description`: descripción corta.
+  - `disable-model-invocation: true`: registra la skill con `autoinvoke: false`, es decir, solo se invoca explícitamente y el modelo no la sugerirá automáticamente.
+- El cuerpo markdown después del frontmatter se carga como `content` inline.
+
+Puedes desactivar el registro automático con la opción `skills: false` en `opencode.json`.
 
 ## Desarrollo
 

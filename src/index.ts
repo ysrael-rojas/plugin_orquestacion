@@ -3,6 +3,7 @@ import { Plugin } from "@opencode/plugin"
 import { AGENTS } from "./agents"
 import { detectEngram, formatEngramStatus } from "./engram"
 import { registerTools } from "./tools"
+import { registerSkills } from "./skills"
 import type { PluginCtx, PluginOptions } from "./types"
 
 /**
@@ -38,6 +39,8 @@ export default Plugin.define({
       typeof options.worktreeParent === "string" && options.worktreeParent.trim()
         ? options.worktreeParent.trim()
         : undefined
+
+    const skillsEnabled = options.skills !== false
 
     const rawRunHistory = (options as PluginOptions).runHistory
     const runHistory =
@@ -94,6 +97,8 @@ export default Plugin.define({
       })
     })
 
+    const skills = await registerSkills(ctx, { enabled: skillsEnabled, workdir })
+
     await warnMissingAgents(ctx)
 
     const engram = await detectEngram(ctx)
@@ -109,6 +114,11 @@ export default Plugin.define({
       }
       try {
         await commands?.dispose?.()
+      } catch {
+        // sin acción: el plugin se está descargando
+      }
+      try {
+        await skills?.dispose?.()
       } catch {
         // sin acción: el plugin se está descargando
       }
