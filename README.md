@@ -96,11 +96,9 @@ La herramienta se ejecuta **en segundo plano**: devuelve un `runId` de inmediato
 4. Si la llamada original se interrumpe, **el trabajo continúa**: basta consultar el mismo `runId` (o `aiapaec_run_status` sin argumentos para ver los recientes) para recuperar el resultado.
 5. Nunca relanzar un run sin verificar antes su estado.
 
-Para planes muy cortos se puede usar `wait: true` en `aiapaec_orchestrate`: espera el resultado completo y lo devuelve en la misma llamada.
-
 > v0.8: el modo `wait` se **retiró** porque reintroducía el problema de "Tool result missing" en llamadas largas. Usa siempre el modo segundo plano + `aiapaec_run_status`.
 
-### Worktrees por tarea (Fase 2)
+### Worktrees por tarea
 
 Marca una tarea con `worktree: true` y el runner crea un **git worktree** en `<padre>/worktrees/<runId>-<taskId>` desde la rama base: la sesión hija corre con ese directorio como cwd, así que dos coder pueden trabajar **en paralelo** sin conflictos de rama ni de archivos.
 

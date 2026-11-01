@@ -18,7 +18,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
 /** Renderiza el contenido exacto que debe tener `config/agents.json`. */
 export function renderAgents(): string {
-  return JSON.stringify(AGENTS, null, 2) + "\n"
+  return `${JSON.stringify(AGENTS, null, 2)}\n`
 }
 
 function isMain(): boolean {
@@ -39,7 +39,7 @@ function run(): void {
 
     const config = JSON.parse(readFileSync(configPath, "utf8")) as Record<string, any>
     config.agents = { ...(config.agents ?? {}), ...AGENTS }
-    writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n")
+    writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`)
     console.log(`agentes instalados en ${configPath}`)
   }
 }
