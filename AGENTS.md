@@ -4,7 +4,7 @@ Plugin TypeScript ESM para OpenCode V2 (arquitectura "Aiapaec"). OpenCode carga 
 
 ## Comandos
 
-- `npm test` — lint (Biome) + typecheck + bundle de pruebas con esbuild + `node --test` (30 pruebas, ~1 s). No necesita OpenCode corriendo.
+- `npm test` — lint (Biome) + typecheck + bundle de pruebas con esbuild + `node --test` (40 pruebas, ~1 s). No necesita OpenCode corriendo.
 - `npm run lint` — solo Biome (`biome.json`; `noExplicitAny`, `noNonNullAssertion` y `useOptionalChain` desactivadas por estilo del repo).
 - `npm run typecheck` — solo `tsc --noEmit` (no cubre `scripts/`).
 - `npm run agents:sync` — regenera `config/agents.json` desde `src/agents.ts`.
@@ -23,6 +23,7 @@ Plugin TypeScript ESM para OpenCode V2 (arquitectura "Aiapaec"). OpenCode carga 
 - **Catálogo de skills**: la fuente única de verdad está en `.agents/skills/` (hoy `grilling` y `grill-me`). Cada subdirectorio es el ID de la skill y contiene un `SKILL.md` con frontmatter (`name`, `description`, `disable-model-invocation`). Al cargar el plugin se registran automáticamente; `disable-model-invocation: true` se traduce a `autoinvoke: false` (solo invocable explícitamente). Se puede desactivar con la opción `skills: false`.
 - Si cambias el nombre de una herramienta, actualiza también sus referencias en los prompts de `src/agents.ts` y regenera con `npm run agents:sync`.
 - Tareas con `worktree: true` corren en un **git worktree aislado** (`<padre>/worktrees/<runId>-<taskId>`): la sesión hija usa `location.directory` = worktree y los dependientes reciben esa ruta en el prompt. `cleanupWorktrees` borra los de tareas exitosas; los fallidos se conservan.
+- **planDocs**: cada orquestación genera un documento de plan vivo en `docs/plans/<runId>.md` del repo principal. Contiene la spec inicial, el avance tras cada oleada y el estado final (o `aborted`). La opción de plugin `planDocs` es `true` por defecto (`docs/plans/`), `false` lo desactiva y un `string` cambia la carpeta tras sanitizar que sea una subcarpeta relativa. La escritura inicial es *fail-hard*: aborta el run antes de crear sesiones si falla; las actualizaciones por oleada son *best-effort* y sus advertencias aparecen en `aiapaec_run_status` bajo **Advertencias del documento de plan**. `aiapaec_run_status` muestra la línea `Plan: docs/plans/<runId>.md`.
 - Parte TUI en `src/tui.ts` (export `./tui`): comando `/aiapaec` y de paleta; usa diálogos del TUI (sin JSX/OpenTUI) y agrupa sesiones hijas por `runId` desde su metadata.
 - `scripts/smoke.ts` prueba con un `PluginCtx` mockeado (sin red). Si cambias el uso de la API, valida las formas contra `~/.config/opencode/node_modules/@opencode/plugin`.
 
