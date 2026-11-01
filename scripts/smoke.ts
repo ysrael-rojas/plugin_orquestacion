@@ -14,12 +14,18 @@ function makeCtx(options: { fail?: string[]; delayMs?: number } = {}): PluginCtx
   const prompts: Array<{ taskId: string; text: string }> = []
   const worktreesCreated: any[] = []
   const worktreesRemoved: any[] = []
+  const permissionAsserts: any[] = []
   const sessions = new Map<string, { input: any; prompt?: string; messages: any[] }>()
   const storage = new Map<string, any>()
 
   const ctx: PluginCtx = {
     options: {},
     location: { directory: "C:/repo", project: { id: "proj_test" } },
+    permission: {
+      async assert(input: any) {
+        permissionAsserts.push(input)
+      },
+    },
     worktree: {
       async create(input: any) {
         worktreesCreated.push(input)
@@ -96,6 +102,7 @@ function makeCtx(options: { fail?: string[]; delayMs?: number } = {}): PluginCtx
 
   ;(ctx as any).__created = created
   ;(ctx as any).__prompts = prompts
+  ;(ctx as any).__permissions = permissionAsserts
   ;(ctx as any).__worktrees = { created: worktreesCreated, removed: worktreesRemoved }
   return ctx
 }
@@ -383,6 +390,56 @@ test("abort: las tareas pendientes se omiten al cancelar el run", async () => {
   assert.equal(run.results[0]!.status, "succeeded")
   assert.equal(run.results[1]!.status, "skipped")
   assert.ok(String(run.results[1]!.error).includes("abortado"))
+})
+
+test("gates: acciones sensibles pasan por permission.assert", async () => {
+  const ctx = makeCtx()
+  const run = await runOrchestration({
+    ctx,
+    input: {
+      objective: "gate",
+      tasks: [
+        { id: "G1", agent: "deployer", objective: "push", permissions: { push_to_remote: true } },
+      ],
+    },
+    baseBranch: "dev",
+    workdir: "C:/repo",
+    keepSessions: true,
+    parentSessionID: "ses_parent",
+  })
+
+  assert.equal(run.results[0]!.status, "succeeded")
+  const asserts = (ctx as any).__permissions as any[]
+  assert.equal(asserts.length, 1)
+  assert.equal(asserts[0].sessionID, "ses_parent")
+  assert.equal(asserts[0].action, "deploy")
+  assert.ok(asserts[0].resources.includes("G1"))
+})
+
+test("gates: un gate denegado falla la tarea sin crear sesión", async () => {
+  const ctx = makeCtx()
+  ctx.permission.assert = async () => {
+    throw new Error("denegado por el humano")
+  }
+
+  const run = await runOrchestration({
+    ctx,
+    input: {
+      objective: "gate denegado",
+      tasks: [
+        { id: "G2", agent: "deployer", objective: "x", permissions: { create_pull_request: true } },
+      ],
+    },
+    baseBranch: "dev",
+    workdir: "C:/repo",
+    keepSessions: true,
+    parentSessionID: "ses_parent",
+  })
+
+  assert.equal(run.results[0]!.status, "failed")
+  assert.ok(String(run.results[0]!.error).includes("Permiso denegado"))
+  const created = (ctx as any).__created as any[]
+  assert.equal(created.length, 0)
 })
 
 test("historial: guardar, recuperar y listar runs", async () => {
