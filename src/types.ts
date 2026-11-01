@@ -69,8 +69,11 @@ export interface RunRecord {
   objective: string
   baseBranch: string
   startedAt: string
-  finishedAt: string
+  finishedAt?: string
+  status: "running" | "completed" | "failed"
+  totalTasks: number
   results: TaskResult[]
+  error?: string
 }
 
 export interface PermissionRule {

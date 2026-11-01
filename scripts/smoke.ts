@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 
 import { buildTaskPrompt, extractReport } from "../src/contracts"
 import { detectEngram } from "../src/engram"
+import { getRun, recentRuns, saveRun } from "../src/history"
 import { buildSessionPermissions } from "../src/permissions"
 import { runOrchestration, planWaves } from "../src/runner"
 import type { PluginCtx, TaskSpec } from "../src/types"
@@ -159,6 +160,7 @@ async function testEngram() {
 
 async function testRunner() {
   const ctx = makeCtx({ delayMs: 100 })
+  const updates: number[] = []
   const result = await runOrchestration({
     ctx,
     input: {
@@ -172,11 +174,16 @@ async function testRunner() {
     baseBranch: "dev",
     workdir: "C:/repo",
     keepSessions: true,
+    onUpdate: ({ results }) => {
+      updates.push(results.length)
+    },
   })
 
   assert.equal(result.results.length, 3)
   assert.ok(result.results.every((entry) => entry.status === "succeeded"))
   assert.equal(result.results[2]!.summary, "resumen de T3")
+  assert.ok(updates.length >= 2, `se esperaban actualizaciones de progreso, hubo ${updates.length}`)
+  assert.equal(updates.at(-1), 3)
 
   const parallel = makeCtx({ delayMs: 300 })
   const started = Date.now()
@@ -236,9 +243,32 @@ async function testRunner() {
   console.log("ok runner")
 }
 
+async function testHistory() {
+  const ctx = makeCtx()
+  const record = {
+    runId: "RUN-1",
+    objective: "objetivo",
+    baseBranch: "dev",
+    startedAt: new Date().toISOString(),
+    status: "running" as const,
+    totalTasks: 1,
+    results: [],
+  }
+
+  await saveRun(ctx, record)
+  const fetched = await getRun(ctx, "RUN-1")
+  assert.equal(fetched?.runId, "RUN-1")
+  assert.equal(fetched?.status, "running")
+
+  const list = await recentRuns(ctx)
+  assert.equal(list.length, 1)
+  console.log("ok history")
+}
+
 await testWaves()
 await testPermissions()
 await testContracts()
 await testEngram()
 await testRunner()
+await testHistory()
 console.log("\nSMOKE OK")

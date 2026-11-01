@@ -70,11 +70,14 @@ Pídele al orquestador algo como:
 
 El orquestador llamará a `aiapaec_orchestrate` con un plan de tareas. Las tareas sin dependencias corren en paralelo; las que declaran `dependsOn` esperan.
 
+La herramienta se ejecuta **en segundo plano**: devuelve un `runId` de inmediato y el avance se consulta con `aiapaec_run_status`. Así el trabajo no se pierde si la llamada original se interrumpe.
+
 ### Herramientas registradas
 
 | Herramienta | Descripción |
 |---|---|
-| `aiapaec_orchestrate` | Ejecuta un plan de subtareas en subagentes. Devuelve reporte consolidado. |
+| `aiapaec_orchestrate` | Ejecuta un plan de subtareas en subagentes (segundo plano, devuelve `runId`). |
+| `aiapaec_run_status` | Consulta el estado de un run por `runId` (o lista los recientes) con reportes consolidados. |
 | `gentle_engram_status` | Diagnóstico de Engram (3 estados). |
 
 ### Comando
@@ -82,6 +85,16 @@ El orquestador llamará a `aiapaec_orchestrate` con un plan de tareas. Las tarea
 | Comando | Descripción |
 |---|---|
 | `/engram-status` | Muestra el diagnóstico de Engram y cómo resolverlo. |
+
+### Ejecución en segundo plano y recuperación
+
+1. El orquestador llama a `aiapaec_orchestrate` con un `runId` propio (p. ej. `RUN-TASK-101`) y recibe la confirmación de inicio.
+2. El run queda registrado en el storage del plugin (`runs/<runId>`) con estado `running` y se actualiza al cerrar cada oleada.
+3. El orquestador consulta `aiapaec_run_status` con ese `runId` hasta que el estado sea `completed` (o `failed`).
+4. Si la llamada original se interrumpe, **el trabajo continúa**: basta consultar el mismo `runId` (o `aiapaec_run_status` sin argumentos para ver los recientes) para recuperar el resultado.
+5. Nunca relanzar un run sin verificar antes su estado.
+
+Para planes muy cortos se puede usar `wait: true` en `aiapaec_orchestrate`: espera el resultado completo y lo devuelve en la misma llamada.
 
 ## Ejemplo de uso
 
@@ -203,11 +216,12 @@ Si el subagente no devuelve JSON válido, el runner conserva el texto como resum
 
 ## Informe de estado
 
-Cada orquestación se guarda en el storage del plugin (`runs/<runId>`) con objetivo, rama base, timestamps y resultados por tarea.
+Cada orquestación se guarda en el storage del plugin (`runs/<runId>`) con objetivo, rama base, timestamps, estado (`running`/`completed`/`failed`) y resultados por tarea. El estado se actualiza al cerrar cada oleada, así que sobrevive a interrupciones del tool.
 
-## Limitaciones conocidas (v0.1)
+## Limitaciones conocidas (v0.2)
 
-- Sin TUI: el estado se ve en las sesiones hijas y en el reporte de la herramienta.
+- Sin TUI: el estado se consulta con `aiapaec_run_status` y en las sesiones hijas.
 - `allowed_files` todavía no es un bloqueo estricto (solo `forbidden_files` y `write_files`/`bash`).
 - Engram se integra vía MCP (los subagentes usan `mem_*` si están conectados).
 - El bloque `config/agents.json` es una copia de `src/agents.ts`; mantener ambos en sincronía si se editan prompts.
+- El modo segundo plano no aborta sesiones hijas si el usuario cancela: el run termina igual (abort explícito queda para v0.3).

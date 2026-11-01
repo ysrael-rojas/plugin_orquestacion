@@ -2,9 +2,15 @@ import type { PluginCtx, RunRecord } from "./types"
 
 const PREFIX = "runs/"
 
-/** Guarda el registro de una orquestación en el storage del plugin. */
+/** Guarda (o actualiza) el registro de una orquestación en el storage del plugin. */
 export async function saveRun(ctx: PluginCtx, record: RunRecord): Promise<void> {
   await ctx.storage.set(`${PREFIX}${record.runId}`, record as any)
+}
+
+/** Recupera un run por ID (permite retomar el reporte aunque se pierda el resultado del tool). */
+export async function getRun(ctx: PluginCtx, runId: string): Promise<RunRecord | undefined> {
+  const value = await ctx.storage.get(`${PREFIX}${runId}`)
+  return value && typeof value === "object" ? (value as RunRecord) : undefined
 }
 
 /** Devuelve las últimas orquestaciones guardadas (más recientes primero). */

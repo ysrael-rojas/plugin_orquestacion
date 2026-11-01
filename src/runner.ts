@@ -14,6 +14,8 @@ export interface RunnerOptions {
   workdir: string
   /** true = conservar sesiones hijas al terminar. */
   keepSessions: boolean
+  /** Se invoca al cerrar cada oleada con el avance acumulado (para persistir el estado). */
+  onUpdate?: (snapshot: { results: readonly TaskResult[] }) => void | Promise<void>
 }
 
 export interface OrchestrationResult {
@@ -139,6 +141,14 @@ export async function runOrchestration(options: RunnerOptions): Promise<Orchestr
       results.push(result)
       byId.set(result.taskId, result)
     })
+
+    if (options.onUpdate) {
+      try {
+        await options.onUpdate({ results: [...results] })
+      } catch {
+        // El avance es informativo; no debe romper la orquestación.
+      }
+    }
   }
 
   return {
