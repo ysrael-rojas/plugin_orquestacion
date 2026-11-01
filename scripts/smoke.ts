@@ -1,4 +1,6 @@
 import assert from "node:assert/strict"
+import fs from "node:fs"
+import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
 
@@ -6,6 +8,7 @@ import { buildTaskPrompt, extractReport } from "../src/contracts"
 import { detectEngram } from "../src/engram"
 import { getRun, pruneRuns, recentRuns, saveRun } from "../src/history"
 import { buildSessionPermissions } from "../src/permissions"
+import { renderPlanMarkdown, sanitizePlanDocsFolder, writePlanDocs } from "../src/plandocs"
 import { runOrchestration, planWaves } from "../src/runner"
 import plugin from "../src/index"
 import { registerTools } from "../src/tools"
@@ -574,6 +577,7 @@ const TOOL_SETTINGS = {
   cleanupSessions: false,
   cleanupWorktrees: false,
   runHistory: 50,
+  planDocs: false as string | false,
   workdir: "C:/repo",
 }
 
@@ -922,4 +926,234 @@ test("skills: degradación graceful cuando ctx.skill no existe", async () => {
     warnings.some((warning) => warning.includes("ctx.skill.transform no está disponible")),
     "debe advertir la degradación cuando ctx.skill falta",
   )
+})
+
+async function waitForFile(filePath: string, timeoutMs = 1000) {
+  const start = Date.now()
+  while (Date.now() - start < timeoutMs) {
+    if (fs.existsSync(filePath)) return
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error(`no apareció ${filePath}`)
+}
+
+function cleanupDir(dir: string) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true })
+  } catch {
+    // best-effort
+  }
+}
+
+test("plandocs: renderiza markdown con frontmatter, tabla y estados", () => {
+  const markdown = renderPlanMarkdown({
+    workdir: "C:/repo",
+    folder: "docs/plans",
+    runId: "RUN-PLAN-1",
+    objective: "objetivo de prueba",
+    baseBranch: "dev",
+    startedAt: "2024-01-01T00:00:00.000Z",
+    status: "running",
+    contextSummary: "contexto del run",
+    tasks: [
+      { id: "T1", agent: "explorador", objective: "a" },
+      { id: "T2", agent: "coder", objective: "b", dependsOn: ["T1"], branch: "feat/T2" },
+    ],
+    results: [{ taskId: "T1", agent: "explorador", status: "succeeded", summary: "resumen T1" }],
+    inFlight: ["T2"],
+  })
+
+  assert.match(markdown, /runId: "RUN-PLAN-1"/)
+  assert.match(markdown, /objective: objetivo de prueba/)
+  assert.match(markdown, /status: running/)
+  assert.match(markdown, /baseBranch: dev/)
+  assert.match(markdown, /startedAt: "2024-01-01T00:00:00.000Z"/)
+  assert.match(markdown, /## Contexto/)
+  assert.match(markdown, /contexto del run/)
+  assert.match(markdown, /\| T1 \| explorador \| ✅ succeeded \|/)
+  assert.match(markdown, /\| T2 \| coder \| ⏳ running \| `feat\/T2` \| T1 \|/)
+  assert.match(markdown, /## Avance por tarea/)
+  assert.match(markdown, /\*\*T1\*\* \(✅ succeeded\): resumen T1/)
+  assert.match(markdown, /\*\*T2\*\* \(⏳ running\): \(sin resumen\)/)
+})
+
+test("plandocs: sanitización de carpeta", () => {
+  assert.equal(sanitizePlanDocsFolder("docs/planes"), "docs/planes")
+  assert.equal(sanitizePlanDocsFolder("  docs/planes  "), "docs/planes")
+  assert.equal(sanitizePlanDocsFolder("docs/planes/sub"), "docs/planes/sub")
+  assert.equal(sanitizePlanDocsFolder("docs\\\\planes"), "docs/planes")
+  assert.equal(sanitizePlanDocsFolder("C:/abs"), "docs/plans")
+  assert.equal(sanitizePlanDocsFolder("/abs"), "docs/plans")
+  assert.equal(sanitizePlanDocsFolder("docs/../plans"), "docs/plans")
+  assert.equal(sanitizePlanDocsFolder(""), "docs/plans")
+  assert.equal(sanitizePlanDocsFolder("   "), "docs/plans")
+  assert.equal(sanitizePlanDocsFolder("./docs/plans"), "docs/plans")
+})
+
+test("plandocs: writePlanDocs propaga errores para fail-hard inicial", async () => {
+  const failingWriter = {
+    mkdir: async () => {},
+    writeFile: async () => {
+      throw new Error("disk full")
+    },
+  }
+  await assert.rejects(
+    writePlanDocs(
+      {
+        workdir: "C:/repo",
+        folder: "docs/plans",
+        runId: "RUN-FAIL-UNIT",
+        objective: "x",
+        baseBranch: "dev",
+        startedAt: new Date().toISOString(),
+        status: "running",
+        tasks: [{ id: "T1", agent: "contexto", objective: "x" }],
+        results: [],
+        inFlight: [],
+      },
+      failingWriter,
+    ),
+    /disk full/,
+  )
+})
+
+test("plandocs: activado escribe el spec inicial y run_status lo muestra", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "plandocs-status-"))
+  try {
+    const { ctx, tools } = makeToolCtx()
+    await registerTools(ctx, { ...TOOL_SETTINGS, workdir: tmpDir, planDocs: "docs/plans" })
+    const orchestrate = tools.get("orchestrate")!
+    const runStatus = tools.get("run_status")!
+
+    await orchestrate.execute(
+      {
+        objective: "objetivo con plan",
+        runId: "RUN-PLAN-STATUS",
+        tasks: [{ id: "T1", agent: "contexto", objective: "x" }],
+        context: { summary: "contexto de la orquestación" },
+      },
+      { sessionID: "ses_orq" },
+    )
+    await waitForRun(ctx, "RUN-PLAN-STATUS")
+
+    const planPath = path.join(tmpDir, "docs/plans/RUN-PLAN-STATUS.md")
+    assert.equal(fs.existsSync(planPath), true)
+    const content = fs.readFileSync(planPath, "utf8")
+    assert.match(content, /runId: "RUN-PLAN-STATUS"/)
+    assert.match(content, /contexto de la orquestación/)
+    assert.match(content, /\| T1 \| contexto \| ✅ succeeded \|/)
+
+    const status = await runStatus.execute({ runId: "RUN-PLAN-STATUS" })
+    assert.match(String(status.content), /\*\*Plan:\*\* docs\/plans\/RUN-PLAN-STATUS\.md/)
+  } finally {
+    cleanupDir(tmpDir)
+  }
+})
+
+test("plandocs: carpeta custom se refleja en run_status", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "plandocs-custom-"))
+  try {
+    const { ctx, tools } = makeToolCtx()
+    await registerTools(ctx, { ...TOOL_SETTINGS, workdir: tmpDir, planDocs: "custom/planes" })
+    const orchestrate = tools.get("orchestrate")!
+    const runStatus = tools.get("run_status")!
+
+    await orchestrate.execute(
+      { objective: "x", runId: "RUN-CUSTOM", tasks: [{ id: "T1", agent: "contexto", objective: "x" }] },
+      { sessionID: "ses_orq" },
+    )
+    await waitForRun(ctx, "RUN-CUSTOM")
+
+    assert.equal(fs.existsSync(path.join(tmpDir, "custom/planes/RUN-CUSTOM.md")), true)
+    const status = await runStatus.execute({ runId: "RUN-CUSTOM" })
+    assert.match(String(status.content), /\*\*Plan:\*\* custom\/planes\/RUN-CUSTOM\.md/)
+  } finally {
+    cleanupDir(tmpDir)
+  }
+})
+
+test("plandocs: fallo inicial aborta el run sin crear sesiones", async () => {
+  const { ctx, tools } = makeToolCtx()
+  const badWorkdir = path.join(os.tmpdir(), "plandocs-fail-*invalid*")
+  await registerTools(ctx, { ...TOOL_SETTINGS, workdir: badWorkdir, planDocs: "docs/plans" })
+  const orchestrate = tools.get("orchestrate")!
+
+  const response = await orchestrate.execute(
+    { objective: "x", runId: "RUN-PLAN-FAIL", tasks: [{ id: "T1", agent: "contexto", objective: "x" }] },
+    { sessionID: "ses_orq" },
+  )
+  assert.match(String(response.content), /No se pudo inicializar el plan de documentación/)
+  assert.equal(response.metadata.ok, false)
+
+  const created = (ctx as any).__created as any[]
+  assert.equal(created.length, 0, "no debe crear sesiones si falla el plan inicial")
+})
+
+test("plandocs: fallo en update no rompe el run", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "plandocs-be-"))
+  try {
+    const { ctx, tools } = makeToolCtx({ delayMs: 300 })
+    await registerTools(ctx, { ...TOOL_SETTINGS, workdir: tmpDir, planDocs: "docs/plans" })
+    const orchestrate = tools.get("orchestrate")!
+
+    orchestrate.execute(
+      { objective: "x", runId: "RUN-BE", tasks: [{ id: "T1", agent: "contexto", objective: "x" }] },
+      { sessionID: "ses_orq" },
+    )
+
+    const planPath = path.join(tmpDir, "docs/plans/RUN-BE.md")
+    await waitForFile(planPath, 1000)
+    fs.chmodSync(planPath, 0o444)
+
+    const record = await waitForRun(ctx, "RUN-BE")
+    assert.equal(record.status, "completed", "el run debe terminar a pesar del fallo de escritura")
+  } finally {
+    cleanupDir(tmpDir)
+  }
+})
+
+test("plandocs: abort marca el plan como aborted", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "plandocs-abort-"))
+  try {
+    const { ctx, tools } = makeToolCtx({ delayMs: 500 })
+    await registerTools(ctx, { ...TOOL_SETTINGS, workdir: tmpDir, planDocs: "docs/plans" })
+    const orchestrate = tools.get("orchestrate")!
+    const abort = tools.get("run_abort")!
+
+    orchestrate.execute(
+      { objective: "abort", runId: "RUN-PLAN-ABORT", tasks: [{ id: "A1", agent: "contexto", objective: "x" }] },
+      { sessionID: "ses_orq" },
+    )
+
+    const planPath = path.join(tmpDir, "docs/plans/RUN-PLAN-ABORT.md")
+    await waitForFile(planPath, 1000)
+    await abort.execute({ runId: "RUN-PLAN-ABORT" })
+
+    const record = await waitForRun(ctx, "RUN-PLAN-ABORT")
+    assert.equal(record.status, "aborted")
+
+    const content = fs.readFileSync(planPath, "utf8")
+    assert.match(content, /status: aborted/)
+  } finally {
+    cleanupDir(tmpDir)
+  }
+})
+
+test("plandocs: desactivado no escribe nada", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "plandocs-off-"))
+  try {
+    const { ctx, tools } = makeToolCtx()
+    await registerTools(ctx, { ...TOOL_SETTINGS, workdir: tmpDir, planDocs: false })
+    const orchestrate = tools.get("orchestrate")!
+
+    await orchestrate.execute(
+      { objective: "x", runId: "RUN-OFF", tasks: [{ id: "T1", agent: "contexto", objective: "x" }] },
+      { sessionID: "ses_orq" },
+    )
+    await waitForRun(ctx, "RUN-OFF")
+
+    assert.equal(fs.existsSync(path.join(tmpDir, "docs/plans/RUN-OFF.md")), false)
+  } finally {
+    cleanupDir(tmpDir)
+  }
 })
