@@ -1,8 +1,9 @@
 {
   "name": "plugin-de-orquestacion-para-opencode",
-  "version": "0.8.3",
+  "version": "0.9.0",
   "description": "Plugin de orquestación de agentes y subagentes para OpenCode (arquitectura Aiapaec)",
   "type": "module",
+  "packageManager": "pnpm@11.3.0",
   "exports": {
     ".": "./src/index.ts",
     "./tui": "./src/tui.ts"
@@ -17,7 +18,7 @@
     "agents:sync": "esbuild scripts/sync-agents.ts --bundle --platform=node --format=esm --outfile=.tmp/sync-agents.mjs --log-level=error && node .tmp/sync-agents.mjs",
     "agents:install": "esbuild scripts/sync-agents.ts --bundle --platform=node --format=esm --outfile=.tmp/sync-agents.mjs --log-level=error && node .tmp/sync-agents.mjs --install",
     "agents:check": "esbuild scripts/check-agents.ts --bundle --platform=node --format=esm --outfile=.tmp/check-agents.mjs --log-level=error && node .tmp/check-agents.mjs",
-    "test": "npm run lint && npm run typecheck && esbuild scripts/smoke.ts --bundle --platform=node --format=esm --outfile=.tmp/smoke.mjs --log-level=error && node --test .tmp/smoke.mjs"
+    "test": "pnpm run lint && pnpm run typecheck && esbuild scripts/smoke.ts --bundle --platform=node --format=esm --outfile=.tmp/smoke.mjs --log-level=error && node --test .tmp/smoke.mjs"
   },
   "dependencies": {
     "@opencode/plugin": "^2.2.5"
