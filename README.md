@@ -83,6 +83,86 @@ El orquestador llamará a `gentle_orchestrate` con un plan de tareas. Las tareas
 |---|---|
 | `/engram-status` | Muestra el diagnóstico de Engram y cómo resolverlo. |
 
+## Ejemplo de uso
+
+A continuación se muestra un plan realista y minimalista para `gentle_orchestrate`. El objetivo es implementar un endpoint de login con JWT; las tareas de contexto y exploración corren en paralelo, el coder espera a ambas, el QA revisa el código y el deployer prepara el PR.
+
+```json
+{
+  "objective": "Implementar el endpoint de login con JWT y preparar el PR hacia dev",
+  "tasks": [
+    {
+      "id": "TASK-101-CTX",
+      "agent": "contexto",
+      "objective": "Recopilar contexto del dominio de autenticación, modelos de usuario y reglas de negocio actuales.",
+      "context": {
+        "summary": "Busca memoria previa sobre autenticación y sesiones."
+      }
+    },
+    {
+      "id": "TASK-101-EXP",
+      "agent": "explorador",
+      "objective": "Explorar el repo para identificar dónde agregar el endpoint de login y cómo se manejan errores HTTP."
+    },
+    {
+      "id": "TASK-101-CODER",
+      "agent": "coder",
+      "objective": "Implementar el endpoint POST /login con validación de credenciales, generación de JWT y manejo de errores en feat/TASK-101-CODER.",
+      "dependsOn": ["TASK-101-CTX", "TASK-101-EXP"],
+      "scope": {
+        "allowed_files": ["src/auth/**", "src/routes/**", "tests/auth/**"]
+      },
+      "permissions": {
+        "write_files": true,
+        "execute_bash": true,
+        "git_commit": true
+      }
+    },
+    {
+      "id": "TASK-101-QA",
+      "agent": "qa",
+      "objective": "Validar que el endpoint de login tenga tests, manejo de errores y que los commits sigan el formato semántico.",
+      "dependsOn": ["TASK-101-CODER"],
+      "permissions": {
+        "execute_bash": true
+      }
+    },
+    {
+      "id": "TASK-101-DEPLOY",
+      "agent": "deployer",
+      "objective": "Preparar el Pull Request desde feat/TASK-101-CODER hacia dev con descripción y evidencia de tests.",
+      "dependsOn": ["TASK-101-QA"],
+      "permissions": {
+        "write_files": true,
+        "git_commit": true
+      }
+    }
+  ],
+  "keepSessions": true
+}
+```
+
+### Descripción de los campos clave
+
+| Campo | Ubicación | Descripción |
+|---|---|---|
+| `objective` | Raíz | Objetivo global de la orquestación. Se incluye en el prompt de cada subagente como contexto. |
+| `tasks` | Raíz | Lista de subtareas. Debe tener al menos un elemento. |
+| `tasks[].id` | Tarea | Identificador único de la subtarea (por ejemplo `TASK-101-CODER`). |
+| `tasks[].agent` | Tarea | Agente destino registrado en `opencode.json`: `contexto`, `explorador`, `coder`, `qa` o `deployer`. |
+| `tasks[].objective` | Tarea | Objetivo concreto que recibe el subagente en su contrato. |
+| `tasks[].dependsOn` | Tarea | Opcional. IDs de tareas que deben completarse antes; si alguna falla, esta tarea se omite. |
+| `tasks[].branch` | Tarea | Opcional. Rama de trabajo; por defecto se usa `feat/<id>`. |
+| `tasks[].scope.allowed_files` | Tarea | Opcional. Lista de rutas o patrones que el subagente debe respetar (advisory en esta fase). |
+| `tasks[].scope.forbidden_files` | Tarea | Opcional. Lista de rutas o patrones que el subagente no puede editar (bloqueo real). |
+| `tasks[].context.summary` | Tarea | Opcional. Resumen de contexto adicional para el subagente. |
+| `tasks[].context.engram_ids` | Tarea | Opcional. IDs de observaciones de Engram relevantes para la tarea. |
+| `tasks[].permissions.write_files` | Tarea | Opcional. Si es `false`, se aplica una regla `deny` real sobre herramientas de edición. |
+| `tasks[].permissions.execute_bash` | Tarea | Opcional. Si es `false`, se aplica una regla `deny` real sobre ejecución de bash. |
+| `tasks[].permissions.git_commit` | Tarea | Opcional. Indica si el subagente puede realizar commits. |
+| `tasks[].model` | Tarea | Opcional. Override de modelo en formato `providerID/modelID` (por ejemplo `opencode-go/kimi-k2.7-code`). |
+| `keepSessions` | Raíz | Opcional. Si es `true`, conserva las sesiones hijas tras la orquestación para inspección. |
+
 ## Contratos
 
 Cada subtarea recibe un contrato JSON (contrato A) con `task_id`, `target_agent`, `objective`, `branch`, `base_branch`, `scope`, `context_references` y `permissions`.
