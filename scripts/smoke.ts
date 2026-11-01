@@ -856,7 +856,17 @@ test("skills: registra grilling y grill-me desde .agents/skills/", async () => {
 
   assert.ok(grilling.content.includes("design tree"), "el contenido de grilling debe incluir su cuerpo markdown")
   assert.equal(grilling.autoinvoke, undefined, "grilling es autoinvocable por defecto")
+  // Regresión de err_415a4c0e: el esquema de OpenCode (clave opcional de Effect
+  // Schema) rechaza claves presentes con valor undefined ("Expected boolean"),
+  // lo que deshabilita el plugin entero. La clave debe omitirse, no ir vacía.
+  assert.ok(!("autoinvoke" in grilling), "grilling no debe llevar la clave autoinvoke (presente-undefined rompe el esquema)")
   assert.equal(grillMe.autoinvoke, false, "grill-me debe deshabilitar la autoinvocación")
+  assert.ok("autoinvoke" in grillMe, "grill-me sí debe llevar autoinvoke:false explícito")
+  for (const skill of added) {
+    for (const [key, value] of Object.entries(skill)) {
+      assert.ok(value !== undefined, `la skill ${skill.id} no debe tener la clave ${key} con valor undefined`)
+    }
+  }
   assert.equal(grillMe.path, path.join(process.cwd(), ".agents", "skills", "grill-me", "SKILL.md"))
 })
 

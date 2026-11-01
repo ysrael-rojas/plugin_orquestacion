@@ -41,6 +41,11 @@ interface PluginCtxWithSkills extends PluginCtx {
  * `SKILL.md` con frontmatter YAML (`name`, `description`,
  * `disable-model-invocation`). Si `disable-model-invocation` es `true`, se
  * registra con `autoinvoke: false` (solo invocable explícitamente).
+ *
+ * Las claves opcionales (`description`, `autoinvoke`) se **omiten** cuando no
+ * tienen valor: el esquema de OpenCode (Effect Schema, clave opcional) rechaza
+ * una clave presente con valor `undefined` ("Expected boolean"), lo que
+ * deshabilita el plugin entero.
  */
 export async function registerSkills(
   ctx: PluginCtx,
@@ -69,8 +74,8 @@ export async function registerSkills(
       editor.add({
         id: skill.id,
         name: skill.name,
-        description: skill.description,
-        autoinvoke: skill.autoinvoke,
+        ...(skill.description === undefined ? {} : { description: skill.description }),
+        ...(skill.autoinvoke === undefined ? {} : { autoinvoke: skill.autoinvoke }),
         path: skill.path,
         content: skill.content,
       })
