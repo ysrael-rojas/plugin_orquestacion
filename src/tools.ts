@@ -13,6 +13,7 @@ export interface ToolSettings {
   cleanupWorktrees: boolean
   worktreeParent?: string
   taskTimeoutMs?: number
+  runHistory: number
   workdir: string
 }
 
@@ -275,7 +276,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             } catch {
               // best-effort
             }
-            await pruneRuns(ctx, 50).catch(() => undefined)
+            await pruneRuns(ctx, settings.runHistory).catch(() => undefined)
             return record
           })
           .catch(async (error): Promise<RunRecord> => {

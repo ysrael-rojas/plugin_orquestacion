@@ -3,7 +3,7 @@ import { test } from "node:test"
 
 import { buildTaskPrompt, extractReport } from "../src/contracts"
 import { detectEngram } from "../src/engram"
-import { getRun, recentRuns, saveRun } from "../src/history"
+import { getRun, pruneRuns, recentRuns, saveRun } from "../src/history"
 import { buildSessionPermissions } from "../src/permissions"
 import { runOrchestration, planWaves } from "../src/runner"
 import { registerTools } from "../src/tools"
@@ -570,6 +570,7 @@ const TOOL_SETTINGS = {
   baseBranch: "dev",
   cleanupSessions: false,
   cleanupWorktrees: false,
+  runHistory: 50,
   workdir: "C:/repo",
 }
 
@@ -752,4 +753,78 @@ test("historial: guardar, recuperar y listar runs", async () => {
 
   const list = await recentRuns(ctx)
   assert.equal(list.length, 1)
+})
+
+test("historial: pruneRuns conserva los más recientes", async () => {
+  const ctx = makeCtx()
+  for (let i = 0; i < 5; i++) {
+    await saveRun(ctx, {
+      runId: `RUN-PRUNE-${i}`,
+      objective: "x",
+      baseBranch: "dev",
+      startedAt: new Date(Date.now() + i * 1000).toISOString(),
+      status: "completed",
+      totalTasks: 0,
+      results: [],
+    })
+  }
+
+  const removed = await pruneRuns(ctx, 2)
+  assert.equal(removed, 3, "debe eliminar los 3 más antiguos")
+
+  const remaining = await recentRuns(ctx, 10)
+  assert.equal(remaining.length, 2)
+  assert.equal(remaining[0]!.runId, "RUN-PRUNE-4")
+  assert.equal(remaining[1]!.runId, "RUN-PRUNE-3")
+
+  const gone = await getRun(ctx, "RUN-PRUNE-0")
+  assert.equal(gone, undefined)
+})
+
+test("historial: pruneRuns sin argumento usa default 50", async () => {
+  const ctx = makeCtx()
+  for (let i = 0; i < 10; i++) {
+    await saveRun(ctx, {
+      runId: `RUN-DEFAULT-${i}`,
+      objective: "x",
+      baseBranch: "dev",
+      startedAt: new Date(Date.now() + i * 1000).toISOString(),
+      status: "completed",
+      totalTasks: 0,
+      results: [],
+    })
+  }
+
+  const removed = await pruneRuns(ctx)
+  assert.equal(removed, 0, "con menos de 50 runs no debe eliminar nada")
+
+  const remaining = await recentRuns(ctx, 100)
+  assert.equal(remaining.length, 10)
+})
+
+test("tools: runHistory se conecta de extremo a extremo", async () => {
+  const { ctx, tools } = makeToolCtx()
+  await registerTools(ctx, { ...TOOL_SETTINGS, runHistory: 2 })
+  const orchestrate = tools.get("orchestrate")!
+
+  for (let i = 0; i < 3; i++) {
+    const started = await orchestrate.execute(
+      {
+        objective: `run ${i}`,
+        runId: `RUN-E2E-${i}`,
+        tasks: [{ id: `E${i}`, agent: "contexto", objective: "x" }],
+      },
+      { sessionID: "ses_orq" },
+    )
+    assert.equal(started.metadata.status, "running")
+  }
+
+  for (let i = 0; i < 3; i++) {
+    await waitForRun(ctx, `RUN-E2E-${i}`)
+  }
+
+  const runs = await recentRuns(ctx, 10)
+  assert.equal(runs.length, 2, "con runHistory=2 deben quedar los dos runs más recientes")
+  assert.equal(runs[0]!.runId, "RUN-E2E-2")
+  assert.equal(runs[1]!.runId, "RUN-E2E-1")
 })

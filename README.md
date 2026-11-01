@@ -234,10 +234,11 @@ Si el subagente no devuelve un reporte JSON con `status`, la tarea queda en esta
 | `cleanupWorktrees` | `false` | Si es `true`, elimina los worktrees de tareas exitosas al terminar el run (los fallidos se conservan). |
 | `worktreeParent` | `<padre del repo>/worktrees` | Directorio padre donde se crean los worktrees. |
 | `taskTimeoutMs` | sin límite | Timeout por tarea en milisegundos; al vencer se interrumpe la sesión hija y la tarea falla. |
+| `runHistory` | `50` | Cuántos runs se conservan en el historial. Si el valor es inválido (no entero o ≤ 0) se usa `50`. |
 
 ## Informe de estado
 
-Cada orquestación se guarda en el storage del plugin (`runs/<runId>`) con objetivo, rama base, timestamps, estado (`running`/`completed`/`failed`/`aborted`) y resultados por tarea. El estado se actualiza al cerrar cada oleada, así que sobrevive a interrupciones del tool. Se conservan los **50 runs más recientes** (limpieza automática).
+Cada orquestación se guarda en el storage del plugin (`runs/<runId>`) con objetivo, rama base, timestamps, estado (`running`/`completed`/`failed`/`aborted`) y resultados por tarea. El estado se actualiza al cerrar cada oleada, así que sobrevive a interrupciones del tool. Se conservan los **50 runs más recientes** por defecto (limpieza automática); configurable con la opción `runHistory`.
 
 ## Limitaciones conocidas (v0.8)
 
