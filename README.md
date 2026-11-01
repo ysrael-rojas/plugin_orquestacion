@@ -98,6 +98,8 @@ La herramienta se ejecuta **en segundo plano**: devuelve un `runId` de inmediato
 
 Para planes muy cortos se puede usar `wait: true` en `aiapaec_orchestrate`: espera el resultado completo y lo devuelve en la misma llamada.
 
+> v0.8: el modo `wait` se **retiró** porque reintroducía el problema de "Tool result missing" en llamadas largas. Usa siempre el modo segundo plano + `aiapaec_run_status`.
+
 ### Worktrees por tarea (Fase 2)
 
 Marca una tarea con `worktree: true` y el runner crea un **git worktree** en `<padre>/worktrees/<runId>-<taskId>` desde la rama base: la sesión hija corre con ese directorio como cwd, así que dos coder pueden trabajar **en paralelo** sin conflictos de rama ni de archivos.
@@ -178,15 +180,20 @@ A continuación se muestra un plan realista y minimalista para `aiapaec_orchestr
 | `tasks[].objective` | Tarea | Objetivo concreto que recibe el subagente en su contrato. |
 | `tasks[].dependsOn` | Tarea | Opcional. IDs de tareas que deben completarse antes; si alguna falla, esta tarea se omite. |
 | `tasks[].branch` | Tarea | Opcional. Rama de trabajo; por defecto se usa `feat/<id>`. |
-| `tasks[].scope.allowed_files` | Tarea | Opcional. Lista de rutas o patrones que el subagente debe respetar (advisory en esta fase). |
+| `tasks[].scope.allowed_files` | Tarea | Opcional. Rutas o globs (`src/auth/**`) permitidos. Advisory por defecto; con `strict_scope: true` es bloqueo real. |
 | `tasks[].scope.forbidden_files` | Tarea | Opcional. Lista de rutas o patrones que el subagente no puede editar (bloqueo real). |
+| `tasks[].strict_scope` | Tarea | Opcional. Con `allowed_files`, niega `edit` global y solo permite la lista (los globs se respetan tal cual); sin `execute_bash: true` también deniega shell. |
+| `tasks[].worktree` | Tarea | Opcional. Ejecuta la tarea en un git worktree aislado (requiere `projectID` de la ubicación). |
 | `tasks[].context.summary` | Tarea | Opcional. Resumen de contexto adicional para el subagente. |
 | `tasks[].context.engram_ids` | Tarea | Opcional. IDs de observaciones de Engram relevantes para la tarea. |
 | `tasks[].permissions.write_files` | Tarea | Opcional. Si es `false`, se aplica una regla `deny` real sobre herramientas de edición. |
 | `tasks[].permissions.execute_bash` | Tarea | Opcional. Si es `false`, se aplica una regla `deny` real sobre ejecución de bash. |
-| `tasks[].permissions.git_commit` | Tarea | Opcional. Indica si el subagente puede realizar commits. |
+| `tasks[].permissions.git_commit` | Tarea | Opcional. Si es `false`, se deniega `git commit` por bash. |
+| `tasks[].permissions.push_to_remote` / `create_pull_request` / `production_deploy` | Tarea | Opcional. Acciones sensibles: pasan por un gate de permiso (`permission.assert`) antes de ejecutarse. |
 | `tasks[].model` | Tarea | Opcional. Override de modelo en formato `providerID/modelID` (por ejemplo `opencode-go/kimi-k2.7-code`). |
+| `runId` | Raíz | Opcional. ID canónico del run (ej. `RUN-TASK-101`). Se usa en sesiones, worktrees y storage. No puede repetirse. |
 | `keepSessions` | Raíz | Opcional. Si es `true`, conserva las sesiones hijas tras la orquestación para inspección. |
+| `cleanupWorktrees` | Raíz | Opcional. Si es `true`, elimina los worktrees de tareas exitosas al terminar el run. |
 
 ## Contratos
 
@@ -204,7 +211,7 @@ El subagente debe cerrar con un reporte JSON (contrato B):
 }
 ```
 
-Si el subagente no devuelve JSON válido, el runner conserva el texto como resumen y marca la tarea como completada con reporte vacío (sin bloquear la orquestación). Si el reporte declara un `status` distinto de `success`, la tarea se marca como fallida y sus dependientes se omiten.
+Si el subagente no devuelve un reporte JSON con `status`, la tarea queda en estado **`unconfirmed`** (⚠️) con el texto como resumen: no se cuenta como éxito y sus dependientes se omiten. Si el reporte declara un `status` distinto de `success`, la tarea se marca como fallida. El reporte se toma del **último** bloque ```json de la respuesta (el contrato de entrada no se confunde con el reporte).
 
 ## Permisos
 
@@ -218,7 +225,7 @@ Si el subagente no devuelve JSON válido, el runner conserva el texto como resum
 
 - Cada tarea de código trabaja en `feat/<task_id>` derivada de `baseBranch` (`dev` por defecto).
 - Sin merge ni push a la rama base: el merge lo aprueba el humano.
-- En Fase 2, el aislamiento por tarea usará **worktrees** (`ctx.worktree`), lo que permitirá varios coder en paralelo sin conflictos de rama.
+- Con `worktree: true` cada tarea corre aislada en su propio worktree, lo que permite varios coder en paralelo sin conflictos de rama.
 
 ## Opciones del plugin
 
@@ -228,19 +235,21 @@ Si el subagente no devuelve JSON válido, el runner conserva el texto como resum
 | `cleanupSessions` | `false` | Si es `true`, elimina las sesiones hijas al terminar (por defecto se conservan para inspección). |
 | `cleanupWorktrees` | `false` | Si es `true`, elimina los worktrees de tareas exitosas al terminar el run (los fallidos se conservan). |
 | `worktreeParent` | `<padre del repo>/worktrees` | Directorio padre donde se crean los worktrees. |
+| `taskTimeoutMs` | sin límite | Timeout por tarea en milisegundos; al vencer se interrumpe la sesión hija y la tarea falla. |
 
 ## Informe de estado
 
-Cada orquestación se guarda en el storage del plugin (`runs/<runId>`) con objetivo, rama base, timestamps, estado (`running`/`completed`/`failed`) y resultados por tarea. El estado se actualiza al cerrar cada oleada, así que sobrevive a interrupciones del tool.
+Cada orquestación se guarda en el storage del plugin (`runs/<runId>`) con objetivo, rama base, timestamps, estado (`running`/`completed`/`failed`/`aborted`) y resultados por tarea. El estado se actualiza al cerrar cada oleada, así que sobrevive a interrupciones del tool. Se conservan los **50 runs más recientes** (limpieza automática).
 
-## Limitaciones conocidas (v0.4)
+## Limitaciones conocidas (v0.8)
 
-- Sin TUI: el estado se consulta con `aiapaec_run_status` y en las sesiones hijas.
-- `allowed_files` es advisory por defecto; usa `strict_scope: true` en la tarea para bloquearlo de verdad.
+- El estado se consulta con `aiapaec_run_status` (o `/aiapaec` en el TUI); no hay vista en vivo por tarea dentro de la salida.
+- `allowed_files` es advisory por defecto; usa `strict_scope: true` en la tarea para bloquearlo. Con `execute_bash: true` el scope no es infalible (shell puede escribir fuera); `strict_scope` deniega bash salvo que lo habilites.
 - Los worktrees requieren que la ubicación exponga `projectID` (si no, la tarea con `worktree: true` falla rápido).
 - Engram se integra vía MCP (los subagentes usan `mem_*` si están conectados).
 - El bloque `config/agents.json` se genera desde `src/agents.ts` con `npm run agents:sync` (no editar a mano).
-- El modo segundo plano no aborta sesiones hijas ni worktrees si el usuario cancela (abort explícito queda para v0.5).
+- Si el servicio se reinicia con un run en curso, el run queda `running` huérfano: `aiapaec_run_status` lo advierte y `aiapaec_run_abort` puede cerrarlo.
+- Los worktrees huérfanos tras un crash no se limpian automáticamente (se listan en el resultado y pueden borrarse a mano).
 
 ## TUI
 
