@@ -97,6 +97,7 @@ function aggregate(context: any, tasks: SessionLike[]): string {
   const states = tasks.map((task) => sessionState(context, task))
   if (states.some((state) => /busy|running|pending/i.test(state))) return "en curso"
   if (states.some((state) => /error|failed/i.test(state))) return "con fallos"
+  if (states.some((state) => /unknown/i.test(state))) return "desconocido"
   return "completado"
 }
 
