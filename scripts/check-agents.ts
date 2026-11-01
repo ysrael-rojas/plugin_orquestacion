@@ -2,7 +2,7 @@
  * Verifica que `config/agents.json` coincida con la generación desde `src/agents.ts`.
  *
  * Uso:
- *   npm run agents:check
+ *   pnpm run agents:check
  *
  * Exit codes:
  *   0 → `config/agents.json` está sincronizado

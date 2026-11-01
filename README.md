@@ -109,7 +109,7 @@ Marca una tarea con `worktree: true` y el runner crea un **git worktree** en `<p
 - `cleanupWorktrees: true` (opción del plugin o del run) elimina los worktrees de tareas exitosas al terminar; **los de tareas fallidas se conservan** para inspección.
 - Ruta por defecto: `<padre del repo>/worktrees` (configurable con `worktreeParent`).
 - El coder crea su rama `feat/<task_id>` dentro del worktree, que arranca en HEAD detached sobre la rama base.
-- Los worktrees **no heredan `node_modules`** (ignorado por git): el subagente debe ejecutar `npm install` dentro del worktree antes de correr pruebas con dependencias.
+- Los worktrees **no heredan `node_modules`** (ignorado por git): el subagente debe ejecutar `pnpm install` dentro del worktree antes de correr pruebas con dependencias. Gracias al store global de pnpm, esta instalación es rápida y usa hard-links.
 
 ## Ejemplo de uso
 
@@ -264,7 +264,7 @@ Puedes desactivarlo con `planDocs: false` o cambiar la carpeta con `planDocs: "c
 - `allowed_files` es advisory por defecto; usa `strict_scope: true` en la tarea para bloquearlo. Con `execute_bash: true` el scope no es infalible (shell puede escribir fuera); `strict_scope` deniega bash salvo que lo habilites.
 - Los worktrees requieren que la ubicación exponga `projectID` (si no, la tarea con `worktree: true` falla rápido).
 - Engram se integra vía MCP (los subagentes usan `mem_*` si están conectados).
-- El bloque `config/agents.json` se genera desde `src/agents.ts` con `npm run agents:sync` (no editar a mano).
+- El bloque `config/agents.json` se genera desde `src/agents.ts` con `pnpm run agents:sync` (no editar a mano).
 - Si el servicio se reinicia con un run en curso, el run queda `running` huérfano: `aiapaec_run_status` lo advierte y `aiapaec_run_abort` puede cerrarlo.
 - Los worktrees huérfanos tras un crash no se limpian automáticamente (se listan en el resultado y pueden borrarse a mano).
 
@@ -288,10 +288,10 @@ Puedes desactivar el registro automático con la opción `skills: false` en `ope
 ## Desarrollo
 
 ```bash
-npm test             # lint (Biome) + typecheck + pruebas (node:test)
-npm run lint         # solo Biome
-npm run agents:sync  # regenera config/agents.json desde src/agents.ts
-npm run agents:install  # además fusiona los agentes en ~/.config/opencode/opencode.json
+pnpm test             # lint (Biome) + typecheck + pruebas (node:test)
+pnpm run lint         # solo Biome
+pnpm run agents:sync  # regenera config/agents.json desde src/agents.ts
+pnpm run agents:install  # además fusiona los agentes en ~/.config/opencode/opencode.json
 ```
 
 Si `mem_save` falla con "could not resolve an authoritative OpenCode runtime

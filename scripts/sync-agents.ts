@@ -2,8 +2,8 @@
  * Genera `config/agents.json` desde `src/agents.ts` (fuente única de verdad).
  *
  * Uso:
- *   npm run agents:sync      → regenera config/agents.json
- *   npm run agents:install   → además fusiona los agentes en el opencode.json global
+ *   pnpm run agents:sync      → regenera config/agents.json
+ *   pnpm run agents:install   → además fusiona los agentes en el opencode.json global
  *
  * Variable de entorno:
  *   OPENCODE_CONFIG → ruta explícita del opencode.json (por defecto ~/.config/opencode/opencode.json)
