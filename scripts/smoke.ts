@@ -409,6 +409,7 @@ test("gates: acciones sensibles pasan por permission.assert", async () => {
   })
 
   assert.equal(run.results[0]!.status, "succeeded")
+  assert.equal(run.results[0]!.gated, true)
   const asserts = (ctx as any).__permissions as any[]
   assert.equal(asserts.length, 1)
   assert.equal(asserts[0].sessionID, "ses_parent")

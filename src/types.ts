@@ -66,6 +66,8 @@ export interface TaskResult {
   sessionID?: string
   branch?: string
   worktreeDirectory?: string
+  /** true si la tarea pasó por un gate de permiso aprobado. */
+  gated?: boolean
   summary?: string
   report?: unknown
   text?: string

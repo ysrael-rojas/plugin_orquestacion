@@ -348,6 +348,7 @@ async function executeTask(
       sessionID,
       branch: pickString(report, "artifacts.git_branch") ?? branch,
       worktreeDirectory,
+      ...(needsGate ? { gated: true } : {}),
       summary,
       report,
       text,

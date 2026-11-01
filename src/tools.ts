@@ -508,6 +508,7 @@ function formatRunRecord(record: RunRecord, engramState?: string): string {
         lines.push(result.summary ?? "(sin resumen)")
         if (result.sessionID) lines.push("", `*Sesión: ${result.sessionID}*`)
         if (result.worktreeDirectory) lines.push("", `*Worktree: \`${result.worktreeDirectory}\`*`)
+        if (result.gated) lines.push("", "*Gate de permiso: aprobado (acción sensible)*")
       } else {
         lines.push(`**Error:** ${result.error ?? "desconocido"}`)
         if (result.worktreeDirectory) {
