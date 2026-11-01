@@ -1112,6 +1112,36 @@ test("plandocs: fallo en update no rompe el run", async () => {
   }
 })
 
+test("plandocs: fallo en update acumula warning y run_status lo muestra", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "plandocs-warning-"))
+  try {
+    const { ctx, tools } = makeToolCtx({ delayMs: 300 })
+    await registerTools(ctx, { ...TOOL_SETTINGS, workdir: tmpDir, planDocs: "docs/plans" })
+    const orchestrate = tools.get("orchestrate")!
+    const runStatus = tools.get("run_status")!
+
+    orchestrate.execute(
+      { objective: "x", runId: "RUN-WARNING", tasks: [{ id: "T1", agent: "contexto", objective: "x" }] },
+      { sessionID: "ses_orq" },
+    )
+
+    const planPath = path.join(tmpDir, "docs/plans/RUN-WARNING.md")
+    await waitForFile(planPath, 1000)
+    fs.chmodSync(planPath, 0o444)
+
+    const record = await waitForRun(ctx, "RUN-WARNING")
+    assert.equal(record.status, "completed", "el run debe terminar a pesar del fallo de escritura")
+    assert.ok(record.planDocWarnings && record.planDocWarnings.length > 0, "debe acumular al menos una advertencia")
+    assert.match(record.planDocWarnings![0]!, /No se pudo actualizar/)
+
+    const status = await runStatus.execute({ runId: "RUN-WARNING" })
+    assert.match(String(status.content), /Advertencias del documento de plan/)
+    assert.match(String(status.content), /No se pudo actualizar/)
+  } finally {
+    cleanupDir(tmpDir)
+  }
+})
+
 test("plandocs: abort marca el plan como aborted", async () => {
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "plandocs-abort-"))
   try {

@@ -93,6 +93,8 @@ export interface RunRecord {
   inFlight?: string[]
   results: TaskResult[]
   error?: string
+  /** Advertencias acumuladas de escrituras best-effort del documento de plan. */
+  planDocWarnings?: string[]
 }
 
 /** Estado compartido para cancelar un run en curso. */
@@ -101,6 +103,8 @@ export interface RunControl {
   sessions: Set<string>
   /** Estado del documento de plan, si está activo para este run. */
   planDocs?: PlanDocsState
+  /** Advertencias acumuladas de escrituras best-effort del documento de plan. */
+  planDocWarnings?: string[]
 }
 
 export interface PlanDocsTaskSpec {
