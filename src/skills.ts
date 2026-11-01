@@ -10,7 +10,7 @@ export interface RegisterSkillsOptions {
   workdir?: string
 }
 
-interface ParsedSkill {
+interface Skill {
   id: string
   name: string
   description?: string
@@ -19,8 +19,18 @@ interface ParsedSkill {
   content: string
 }
 
+interface ParsedSkill extends Skill {}
+
 interface SkillEditor {
-  add(skill: any): void
+  add(skill: Skill): void
+}
+
+interface SkillDomain {
+  transform(callback: (editor: SkillEditor) => void): Promise<{ dispose: () => Promise<void> }>
+}
+
+interface PluginCtxWithSkills extends PluginCtx {
+  skill?: SkillDomain
 }
 
 /**
@@ -40,7 +50,7 @@ export async function registerSkills(
     return undefined
   }
 
-  const skillDomain = (ctx as any).skill
+  const skillDomain = (ctx as PluginCtxWithSkills).skill
   if (typeof skillDomain?.transform !== "function") {
     console.warn("[plugin-orquestacion] ctx.skill.transform no está disponible; las skills no se registrarán.")
     return undefined
