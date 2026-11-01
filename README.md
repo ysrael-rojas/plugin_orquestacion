@@ -211,6 +211,7 @@ Si el subagente no devuelve JSON válido, el runner conserva el texto como resum
 - `permissions.execute_bash: false` → regla `deny` real sobre `bash`.
 - `scope.forbidden_files` → reglas `deny` reales sobre `edit` (relativas y absolutas).
 - `scope.allowed_files` → advisory por defecto; con `strict_scope: true` se convierte en **bloqueo real**: `deny` global de `edit` + `allow` solo para los archivos listados.
+- `permissions.push_to_remote`, `create_pull_request`, `production_deploy` → **gate real** con `permission.assert` sobre la sesión orquestadora: si el humano deniega, la tarea falla sin crear sesión. Recomendado en `opencode.json`: `"permissions": [{ "action": "deploy", "resource": "*", "effect": "ask" }]` para que siempre pregunte.
 
 ## Git
 

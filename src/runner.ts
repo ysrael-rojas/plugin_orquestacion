@@ -238,6 +238,41 @@ async function executeTask(
     }
   }
 
+  const sensitive = task.permissions ?? {}
+  const needsGate =
+    sensitive.push_to_remote === true ||
+    sensitive.create_pull_request === true ||
+    sensitive.production_deploy === true
+
+  if (needsGate) {
+    if (!options.parentSessionID) {
+      return {
+        taskId: task.id,
+        agent: task.agent,
+        status: "failed",
+        branch,
+        error: "La tarea pide permisos sensibles pero no hay sesión orquestadora para el gate.",
+      }
+    }
+    try {
+      await ctx.permission.assert({
+        sessionID: options.parentSessionID,
+        action: "deploy",
+        resources: [task.id, branch],
+        save: [task.id],
+        metadata: { taskId: task.id, branch, permissions: sensitive },
+      })
+    } catch (error) {
+      return {
+        taskId: task.id,
+        agent: task.agent,
+        status: "failed",
+        branch,
+        error: `Permiso denegado para la tarea ${task.id}: ${error instanceof Error ? error.message : String(error)}`,
+      }
+    }
+  }
+
   try {
     if (task.worktree) {
       if (!options.projectID) {
@@ -313,6 +348,7 @@ async function executeTask(
       sessionID,
       branch: pickString(report, "artifacts.git_branch") ?? branch,
       worktreeDirectory,
+      ...(needsGate ? { gated: true } : {}),
       summary,
       report,
       text,
