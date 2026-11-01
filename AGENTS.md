@@ -22,6 +22,7 @@ Plugin TypeScript ESM para OpenCode V2 (arquitectura "Aiapaec"). OpenCode carga 
 - Los agentes **no se pueden crear desde el plugin** (la API V2 no lo permite): viven en `opencode.json` → `agents`. `config/agents.json` es **generado** desde `src/agents.ts`; no editarlo a mano.
 - Si cambias el nombre de una herramienta, actualiza también sus referencias en los prompts de `src/agents.ts` y regenera con `npm run agents:sync`.
 - Tareas con `worktree: true` corren en un **git worktree aislado** (`<padre>/worktrees/<runId>-<taskId>`): la sesión hija usa `location.directory` = worktree y los dependientes reciben esa ruta en el prompt. `cleanupWorktrees` borra los de tareas exitosas; los fallidos se conservan.
+- Parte TUI en `src/tui.ts` (export `./tui`): comando `/aiapaec` y de paleta; usa diálogos del TUI (sin JSX/OpenTUI) y agrupa sesiones hijas por `runId` desde su metadata.
 - `scripts/smoke.ts` prueba con un `PluginCtx` mockeado (sin red). Si cambias el uso de la API, valida las formas contra `~/.config/opencode/node_modules/@opencode/plugin`.
 
 ## Quirks de la API V2 (fáciles de romper)

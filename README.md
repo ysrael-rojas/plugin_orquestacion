@@ -242,6 +242,10 @@ Cada orquestación se guarda en el storage del plugin (`runs/<runId>`) con objet
 - El bloque `config/agents.json` se genera desde `src/agents.ts` con `npm run agents:sync` (no editar a mano).
 - El modo segundo plano no aborta sesiones hijas ni worktrees si el usuario cancela (abort explícito queda para v0.5).
 
+## TUI
+
+Al cargarse, la parte TUI registra el comando **`/aiapaec`** (también en la paleta como "Aiapaec: runs de orquestación"): lista los runs agrupados por `runId`, con objetivo y estado por tarea. Se calcula a partir de las sesiones hijas (`metadata.orquestacion`), sin backend adicional.
+
 ## Desarrollo
 
 ```bash

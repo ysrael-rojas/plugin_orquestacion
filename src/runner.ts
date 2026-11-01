@@ -300,6 +300,7 @@ async function executeTask(
         orquestacion: true,
         runId: options.runId,
         taskId: task.id,
+        objective: options.runObjective,
       },
       ...(task.model ? { model: parseModelRef(task.model) } : {}),
     })
