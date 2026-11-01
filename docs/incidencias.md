@@ -87,3 +87,21 @@ quedó con su código original.
 Además (v0.3, commit `141350a`): las sesiones hijas del runner declaran
 `parentID`, lo que da atribución correcta de los writes de subagentes y evita la
 inflación de sesiones (issue #116 de Engram).
+
+**Actualización v0.4 — causa raíz del fallo intermitente (identidad de proyecto + instancias obsoletas):**
+- **Evidencia**: el `projectID` de la carpeta cambió entre las 05:37 y las 05:59
+  del 2026-11-01. Las sesiones previas llevan `31f3e12f…` (commit raíz del repo)
+  y funcionan; las creadas después llevan `f6a474a3…` (identidad distinta
+  asignada por OpenCode) y fallan.
+- **Mecanismo probado**: las instancias del plugin cargadas conservan el
+  `ctx.project.id` viejo. Una sesión nueva cuyo `projectID` no coincide con el
+  de la instancia falla cerrada. Tras `opencode service restart` las instancias
+  se recargan con la resolución actual y `mem_save` funciona (Probe A falló con
+  `f6a474a3…`; Probe B, mismo `projectID`, funcionó tras el reinicio — obs 231).
+- **Contexto**: el home (`C:\Users\Lenovo`) tenía un `.git` sin commits (repo
+  unborn) que envolvía al proyecto. Se eliminó para reducir ambigüedad.
+- **Regla operativa**: ante "could not resolve an authoritative OpenCode runtime
+  session" en sesiones nuevas, reiniciar el servicio (`opencode service
+  restart`). Si el fallo recurre tras reiniciar, revisar la identidad de
+  proyecto (pendiente v0.4: pinning de project root o mover el proyecto fuera
+  del home).
