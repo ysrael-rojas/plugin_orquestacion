@@ -1,6 +1,6 @@
 import { AGENTS } from "./agents"
 import { detectEngram, formatEngramStatus } from "./engram"
-import { getRun, recentRuns, saveRun } from "./history"
+import { getRun, pruneRuns, recentRuns, saveRun } from "./history"
 import { runOrchestration, validateTasks } from "./runner"
 import type { OrchestrateInput, PluginCtx, RunControl, RunRecord, TaskResult } from "./types"
 
@@ -12,6 +12,7 @@ export interface ToolSettings {
   cleanupSessions: boolean
   cleanupWorktrees: boolean
   worktreeParent?: string
+  taskTimeoutMs?: number
   workdir: string
 }
 
@@ -127,10 +128,6 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             type: "boolean",
             description: "Si es true, conserva las sesiones hijas para inspección.",
           },
-          wait: {
-            type: "boolean",
-            description: "Si es true, espera el resultado completo (útil para planes cortos).",
-          },
           cleanupWorktrees: {
             type: "boolean",
             description:
@@ -144,11 +141,18 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
       execute: async (input: any, context: any) => {
         const payload = input as OrchestrateInput & {
           runId?: string
-          wait?: boolean
           cleanupWorktrees?: boolean
         }
 
         const knownAgents = await listAgentIds(ctx)
+        if (!knownAgents) {
+          return {
+            content:
+              "❌ No se pudo listar los agentes de OpenCode (fallo transitorio). Reintenta en unos segundos.",
+            metadata: { ok: false },
+          }
+        }
+
         const missing = Array.from(
           new Set(payload.tasks.map((task) => task.agent).filter((agent) => !knownAgents.has(agent))),
         )
@@ -168,7 +172,6 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           }
         }
 
-        const engram = await detectEngram(ctx)
         const keepSessions = payload.keepSessions ?? !settings.cleanupSessions
         const projectID = ctx.location.project?.id
 
@@ -190,6 +193,14 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           }
         }
 
+        const existing = await getRun(ctx, runId)
+        if (existing) {
+          return {
+            content: `❌ Ya existe un run con el id \`${runId}\` (estado: ${existing.status}). Usa otro ID para no sobrescribir el historial.`,
+            metadata: { ok: false, runId },
+          }
+        }
+
         const control: RunControl = { aborted: false, sessions: new Set() }
         activeRuns.set(runId, control)
 
@@ -205,8 +216,14 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
 
         try {
           await saveRun(ctx, base)
-        } catch {
-          // El estado es best-effort; no impide ejecutar.
+        } catch (error) {
+          activeRuns.delete(runId)
+          return {
+            content: `❌ No se pudo inicializar el run en storage: ${
+              error instanceof Error ? error.message : String(error)
+            }. No se inició nada.`,
+            metadata: { ok: false, runId },
+          }
         }
 
         const execution = runOrchestration({
@@ -214,11 +231,13 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           input: payload,
           baseBranch: settings.baseBranch,
           workdir: settings.workdir,
+          runId,
           keepSessions,
           parentSessionID: typeof context?.sessionID === "string" ? context.sessionID : undefined,
           projectID,
           worktreeParent: settings.worktreeParent,
           cleanupWorktrees: payload.cleanupWorktrees ?? settings.cleanupWorktrees,
+          taskTimeoutMs: settings.taskTimeoutMs,
           control,
           onUpdate: async ({ results }) => {
             try {
@@ -233,7 +252,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             const record: RunRecord = {
               ...base,
               finishedAt: result.finishedAt,
-              status: "completed",
+              status: control.aborted ? "aborted" : "completed",
               results: result.results,
             }
             try {
@@ -241,6 +260,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             } catch {
               // best-effort
             }
+            await pruneRuns(ctx, 50).catch(() => undefined)
             return record
           })
           .catch(async (error): Promise<RunRecord> => {
@@ -248,7 +268,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             const record: RunRecord = {
               ...base,
               finishedAt: new Date().toISOString(),
-              status: "failed",
+              status: control.aborted ? "aborted" : "failed",
               error: error instanceof Error ? error.message : String(error),
             }
             try {
@@ -258,19 +278,6 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             }
             return record
           })
-
-        if (payload.wait) {
-          const record = await execution
-          return {
-            content: formatRunRecord(record, engram.state),
-            metadata: {
-              ok: record.status !== "failed",
-              runId,
-              status: record.status,
-              results: record.results,
-            },
-          }
-        }
 
         // Modo segundo plano: no esperamos el resultado. Si esta llamada se
         // interrumpe, el trabajo continúa y el estado queda en el storage.
@@ -310,33 +317,45 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
       execute: async (input: any) => {
         const runId = typeof input?.runId === "string" ? input.runId.trim() : ""
 
-        if (runId) {
-          const record = await getRun(ctx, runId)
-          if (!record) {
+        try {
+          if (runId) {
+            const record = await getRun(ctx, runId)
+            if (!record) {
+              return {
+                content: `❌ No existe un run con el id \`${runId}\`. Usa \`aiapaec_run_status\` sin argumentos para ver los recientes.`,
+                metadata: { ok: false },
+              }
+            }
+            const orphan = record.status === "running" && !activeRuns.has(runId)
             return {
-              content: `No existe un run con ID \`${runId}\`. Usa \`aiapaec_run_status\` sin argumentos para ver los recientes.`,
-              metadata: { ok: false },
+              content: orphan
+                ? `${formatRunRecord(record)}\n\n⚠️ Sin proceso activo en este servicio (posible run huérfano tras un reinicio). Puedes cerrarlo con \`aiapaec_run_abort\`.`
+                : formatRunRecord(record),
+              metadata: {
+                ok: true,
+                runId: record.runId,
+                status: record.status,
+                done: record.results.length,
+                totalTasks: record.totalTasks,
+                results: record.results,
+              },
             }
           }
+
+          const runs = await recentRuns(ctx, 8)
+          if (runs.length === 0) {
+            return { content: "No hay orquestaciones registradas todavía.", metadata: { ok: true, runs: 0 } }
+          }
+
+          return { content: formatRunsList(runs), metadata: { ok: true, runs: runs.length } }
+        } catch (error) {
           return {
-            content: formatRunRecord(record),
-            metadata: {
-              ok: true,
-              runId: record.runId,
-              status: record.status,
-              done: record.results.length,
-              totalTasks: record.totalTasks,
-              results: record.results,
-            },
+            content: `❌ No se pudo leer el estado de los runs: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            metadata: { ok: false },
           }
         }
-
-        const runs = await recentRuns(ctx, 8)
-        if (runs.length === 0) {
-          return { content: "No hay orquestaciones registradas todavía.", metadata: { ok: true, runs: 0 } }
-        }
-
-        return { content: formatRunsList(runs), metadata: { ok: true, runs: runs.length } }
       },
     })
 
@@ -361,11 +380,30 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
 
         const control = activeRuns.get(runId)
         if (!control) {
-          const record = await getRun(ctx, runId)
+          const record = await getRun(ctx, runId).catch(() => undefined)
+
+          if (record && record.status === "running") {
+            const orphan: RunRecord = {
+              ...record,
+              status: "aborted",
+              finishedAt: new Date().toISOString(),
+              error: "Abortado sin proceso activo (servicio reiniciado)",
+            }
+            try {
+              await saveRun(ctx, orphan)
+            } catch {
+              // best-effort
+            }
+            return {
+              content: `⏹️ El run \`${runId}\` estaba en \`running\` sin proceso activo (servicio reiniciado). Marcado como \`aborted\`.`,
+              metadata: { ok: true, runId, orphan: true },
+            }
+          }
+
           return {
             content: record
-              ? `El run \`${runId}\` no está activo (estado: ${record.status}); no hay nada que abortar.`
-              : `No existe un run con id \`${runId}\`.`,
+              ? `❌ El run \`${runId}\` no está activo (estado: ${record.status}); no hay nada que abortar.`
+              : `❌ No existe un run con el id \`${runId}\`.`,
             metadata: { ok: false },
           }
         }
@@ -414,7 +452,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
   })
 }
 
-async function listAgentIds(ctx: PluginCtx): Promise<Set<string>> {
+async function listAgentIds(ctx: PluginCtx): Promise<Set<string> | undefined> {
   try {
     const output: any = await ctx.agent.list()
     const data = Array.isArray(output) ? output : (output?.data ?? [])
@@ -424,7 +462,7 @@ async function listAgentIds(ctx: PluginCtx): Promise<Set<string>> {
         .filter((id: unknown): id is string => typeof id === "string"),
     )
   } catch {
-    return new Set()
+    return undefined
   }
 }
 
@@ -464,16 +502,25 @@ function statusIcon(status: RunRecord["status"] | TaskResult["status"]): string 
       return "❌"
     case "skipped":
       return "⏭️"
+    case "unconfirmed":
+      return "⚠️"
+    case "aborted":
+      return "⏹️"
     default:
       return "•"
   }
 }
 
-function formatRunRecord(record: RunRecord, engramState?: string): string {
+function escapeCell(value: string): string {
+  return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ")
+}
+
+function formatRunRecord(record: RunRecord): string {
   const done = record.results.length
   const ok = record.results.filter((result) => result.status === "succeeded").length
   const failed = record.results.filter((result) => result.status === "failed").length
   const skipped = record.results.filter((result) => result.status === "skipped").length
+  const unconfirmed = record.results.filter((result) => result.status === "unconfirmed").length
 
   const lines: string[] = [
     `## Orquestación — ${record.objective}`,
@@ -489,16 +536,12 @@ function formatRunRecord(record: RunRecord, engramState?: string): string {
     lines.push(`**Error:** ${record.error}`)
   }
 
-  if (engramState && engramState !== "connected") {
-    lines.push("", "⚠️ Engram no está conectado; la memoria persistente no participó en esta ejecución.")
-  }
-
   if (record.results.length > 0) {
     lines.push("", "| Tarea | Agente | Estado | Tiempo | Rama |", "|---|---|---|---|---|")
     for (const result of record.results) {
       const time = result.latencyMs ? `${(result.latencyMs / 1000).toFixed(1)}s` : "—"
       lines.push(
-        `| ${result.taskId} | ${result.agent} | ${statusIcon(result.status)} ${result.status} | ${time} | ${result.branch ?? "—"} |`,
+        `| ${escapeCell(result.taskId)} | ${escapeCell(result.agent)} | ${statusIcon(result.status)} ${result.status} | ${time} | ${escapeCell(result.branch ?? "—")} |`,
       )
     }
 
@@ -507,8 +550,21 @@ function formatRunRecord(record: RunRecord, engramState?: string): string {
       if (result.status === "succeeded") {
         lines.push(result.summary ?? "(sin resumen)")
         if (result.sessionID) lines.push("", `*Sesión: ${result.sessionID}*`)
-        if (result.worktreeDirectory) lines.push("", `*Worktree: \`${result.worktreeDirectory}\`*`)
+        if (result.worktreeDirectory) {
+          lines.push(
+            "",
+            result.worktreeRemoved
+              ? `*Worktree: \`${result.worktreeDirectory}\` (eliminado)*`
+              : `*Worktree: \`${result.worktreeDirectory}\`*`,
+          )
+        }
         if (result.gated) lines.push("", "*Gate de permiso: aprobado (acción sensible)*")
+      } else if (result.status === "unconfirmed") {
+        lines.push(result.summary ?? "(sin resumen)")
+        lines.push("", `⚠️ ${result.error ?? "Sin reporte estructurado"}`)
+        if (result.worktreeDirectory) {
+          lines.push("", `*Worktree conservado: \`${result.worktreeDirectory}\`*`)
+        }
       } else {
         lines.push(`**Error:** ${result.error ?? "desconocido"}`)
         if (result.worktreeDirectory) {
@@ -523,8 +579,13 @@ function formatRunRecord(record: RunRecord, engramState?: string): string {
       "",
       `⏳ En curso: ${done}/${record.totalTasks} tareas cerradas. Consulta de nuevo \`aiapaec_run_status\` con \`runId: "${record.runId}"\`.`,
     )
-  } else if (failed > 0 || skipped > 0) {
-    lines.push("", `Resumen: ${ok} ✅ · ${failed} ❌ · ${skipped} ⏭️`)
+  } else {
+    const parts = [`${ok} ✅`]
+    if (failed > 0) parts.push(`${failed} ❌`)
+    if (skipped > 0) parts.push(`${skipped} ⏭️`)
+    if (unconfirmed > 0) parts.push(`${unconfirmed} ⚠️`)
+    if (record.status === "aborted") parts.push("run abortado")
+    lines.push("", `Resumen: ${parts.join(" · ")}`)
   }
 
   return lines.join("\n")
@@ -540,7 +601,7 @@ function formatRunsList(runs: RunRecord[]): string {
 
   for (const run of runs) {
     lines.push(
-      `| \`${run.runId}\` | ${run.objective} | ${statusIcon(run.status)} ${run.status} | ${run.results.length}/${run.totalTasks} |`,
+      `| \`${run.runId}\` | ${escapeCell(run.objective)} | ${statusIcon(run.status)} ${run.status} | ${run.results.length}/${run.totalTasks} |`,
     )
   }
 

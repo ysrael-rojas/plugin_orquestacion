@@ -99,20 +99,29 @@ export function buildTaskPrompt(options: PromptOptions): string {
 export function extractReport(text: string): unknown | undefined {
   if (!text) return undefined
 
-  const fenced = text.match(/```json\s*([\s\S]*?)```/i)
-  if (fenced) {
-    const parsed = tryParse(fenced[1]!)
-    if (parsed !== undefined) return parsed
+  // El prompt exige el reporte en el ÚLTIMO bloque ```json; el contrato de
+  // entrada es el primero. Se recorre desde el final y se descartan los
+  // bloques que no tienen forma de reporte (status/task_id).
+  const fenced = [...text.matchAll(/```json\s*([\s\S]*?)```/gi)]
+  for (let index = fenced.length - 1; index >= 0; index--) {
+    const parsed = tryParse(fenced[index]![1]!)
+    if (isReport(parsed)) return parsed
   }
 
   const first = text.indexOf("{")
   const last = text.lastIndexOf("}")
   if (first >= 0 && last > first) {
     const parsed = tryParse(text.slice(first, last + 1))
-    if (parsed !== undefined) return parsed
+    if (isReport(parsed)) return parsed
   }
 
   return undefined
+}
+
+function isReport(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return typeof record.status === "string" || typeof record.task_id === "string"
 }
 
 function tryParse(raw: string): unknown | undefined {

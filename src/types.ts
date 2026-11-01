@@ -18,6 +18,7 @@ export interface TaskContextInfo {
 export interface TaskPermissions {
   write_files?: boolean
   execute_bash?: boolean
+  /** Si es false, se deniega `git commit` por bash. */
   git_commit?: boolean
   /** Acción sensible: pasa por el gate de permiso (permission.assert) antes de ejecutarse. */
   push_to_remote?: boolean
@@ -57,7 +58,7 @@ export interface OrchestrateInput {
   keepSessions?: boolean
 }
 
-export type TaskStatus = "succeeded" | "failed" | "skipped"
+export type TaskStatus = "succeeded" | "failed" | "skipped" | "unconfirmed"
 
 export interface TaskResult {
   taskId: string
@@ -68,9 +69,10 @@ export interface TaskResult {
   worktreeDirectory?: string
   /** true si la tarea pasó por un gate de permiso aprobado. */
   gated?: boolean
+  /** true si el worktree de la tarea se eliminó al finalizar (cleanup). */
+  worktreeRemoved?: boolean
   summary?: string
   report?: unknown
-  text?: string
   latencyMs?: number
   tokens?: unknown
   cost?: unknown
@@ -83,7 +85,7 @@ export interface RunRecord {
   baseBranch: string
   startedAt: string
   finishedAt?: string
-  status: "running" | "completed" | "failed"
+  status: "running" | "completed" | "failed" | "aborted"
   totalTasks: number
   results: TaskResult[]
   error?: string
@@ -120,13 +122,13 @@ export interface PluginCtx {
     prompt(input: any): Promise<unknown>
     wait(input: any): Promise<void>
     context(input: any): Promise<any[]>
-    update(input: any): Promise<void>
     interrupt(input: any): Promise<unknown>
     remove?(input: any): Promise<void>
   }
   storage: {
     set(key: string, value: any): Promise<void>
     get(key: string): Promise<any>
+    remove(key: string): Promise<void>
     scan(options: {
       prefix: string
       limit?: number

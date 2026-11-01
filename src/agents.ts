@@ -146,9 +146,6 @@ export const AGENTS: Record<string, AgentDefinition> = {
   },
 }
 
-/** IDs de los agentes operativos (destinos válidos de una subtarea). */
-export const OPERATIVE_AGENT_IDS = ["contexto", "explorador", "coder", "qa", "deployer"]
-
 /** Bloque listo para copiar en el campo `agents` de opencode.json. */
 export function agentsConfig(): Record<string, AgentDefinition> {
   return AGENTS
