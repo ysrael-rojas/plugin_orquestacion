@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { test } from "node:test"
 
 import { buildTaskPrompt, extractReport } from "../src/contracts"
 import { detectEngram } from "../src/engram"
@@ -83,7 +84,7 @@ function makeCtx(options: { fail?: string[]; delayMs?: number } = {}): PluginCtx
   return ctx
 }
 
-async function testWaves() {
+test("planWaves agrupa por dependencias y detecta ciclos", () => {
   const tasks: TaskSpec[] = [
     { id: "A", agent: "explorador", objective: "a" },
     { id: "B", agent: "explorador", objective: "b" },
@@ -100,11 +101,9 @@ async function testWaves() {
       { id: "Y", agent: "coder", objective: "y", dependsOn: ["X"] },
     ]),
   )
+})
 
-  console.log("ok planWaves")
-}
-
-async function testPermissions() {
+test("permisos de sesión: deny reales por archivo y flags", () => {
   const rules = buildSessionPermissions(
     {
       id: "T1",
@@ -119,10 +118,9 @@ async function testPermissions() {
   assert.ok(rules.some((rule) => rule.action === "bash" && rule.resource === "*" && rule.effect === "deny"))
   assert.ok(rules.some((rule) => rule.resource === "src/config/db.ts"))
   assert.ok(rules.some((rule) => rule.resource === "C:/repo/src/config/db.ts"))
-  console.log("ok permissions")
-}
+})
 
-async function testContracts() {
+test("contratos: prompt con rama base y parseo tolerante del reporte", () => {
   const prompt = buildTaskPrompt({
     task: { id: "TASK-1", agent: "coder", objective: "implementar login" },
     baseBranch: "dev",
@@ -136,10 +134,9 @@ async function testContracts() {
   assert.deepEqual(fenced, { task_id: "T", summary: "s" })
   assert.deepEqual(extractReport('{"a":1}'), { a: 1 })
   assert.equal(extractReport("sin json"), undefined)
-  console.log("ok contracts")
-}
+})
 
-async function testEngram() {
+test("detección de Engram: conectado, no disponible y ausente", async () => {
   const missing = makeCtx()
   assert.equal((await detectEngram(missing)).state, "missing")
 
@@ -160,10 +157,9 @@ async function testEngram() {
     data: [{ name: "engram", status: { status: "pending" } }],
   })
   assert.equal((await detectEngram(pending)).state, "unavailable")
-  console.log("ok engram")
-}
+})
 
-async function testRunner() {
+test("runner: oleadas, paralelismo, parentID y fallos en cadena", async () => {
   const ctx = makeCtx({ delayMs: 100 })
   const updates: number[] = []
   const result = await runOrchestration({
@@ -249,11 +245,9 @@ async function testRunner() {
   })
   assert.equal(errorRun.results[0]!.status, "failed")
   assert.equal(errorRun.results[1]!.status, "skipped")
+})
 
-  console.log("ok runner")
-}
-
-async function testHistory() {
+test("historial: guardar, recuperar y listar runs", async () => {
   const ctx = makeCtx()
   const record = {
     runId: "RUN-1",
@@ -272,13 +266,4 @@ async function testHistory() {
 
   const list = await recentRuns(ctx)
   assert.equal(list.length, 1)
-  console.log("ok history")
-}
-
-await testWaves()
-await testPermissions()
-await testContracts()
-await testEngram()
-await testRunner()
-await testHistory()
-console.log("\nSMOKE OK")
+})
