@@ -283,13 +283,16 @@ Puedes desactivarlo con `planDocs: false` o cambiar la carpeta con `planDocs: "c
 
 El plugin levanta un servidor HTTP **solo en `127.0.0.1`** (nunca expuesto a la red) con el avance de las orquestaciones en vivo:
 
-- URL: **http://127.0.0.1:4780** (configurable con la opción `dashboardPort`; `0` lo desactiva).
-- Página única sin dependencias externas (CSS y JS propios, sin CDN ni bundler): run activo con progreso `X/Y`, tabla de tareas (ID, agente, estado, rama, tiempo y tokens/costo) e **historial de runs pasados plegado**.
-- **Feed de actividad en vivo**: bajo cada tarea ⏳ en curso se listan sus últimas **8 acciones reales** (`tool` + argumento principal truncado a 80 caracteres + `hace Xs`/`hace Xm`), y una sección plegable **«Actividad del orquestador»** muestra lo que hace la sesión que delega. Si una tarea aún no emitió eventos se indica «sin actividad registrada». El feed vive **en RAM** (nunca persiste ni guarda salidas completas) y se alimenta de los eventos `session.tool.*` del runtime, con las sesiones registradas por el runner.
-- Refresco automático cada **2.5 s** con `fetch('/api/state')`; el spinner (`clase pulse`, animación de 2 s) respeta `prefers-reduced-motion`. Cada refresco recalcula los tiempos relativos.
+- URL: **http://127.0.0.1:4780** (configurable con la opción `dashboardPort`; `0` lo desactiva). La URL aparece visible en la **cabecera** de la página.
+- `pnpm run dashboard` abre el dashboard en una **ventana de app** (sin barra de direcciones ni pestañas): prueba `msedge --app=…`, luego `chrome --app=…` y, si no hay ninguno instalado, abre la URL en el navegador por defecto. El puerto va **hardcodeado a 4780**: si usaste otro `dashboardPort`, el script lo advierte y hay que abrir la URL a mano.
+- **Árbol de ejecución** (anti-ruido): cada run se pinta como un árbol indentado con conectores —**orquestador → tareas → sub-sesiones** (los subagentes de un subagente, en cascada por `parentID`)—. Cada nodo muestra su **título corto**, un chip **`agente · modelo`**, el estado (glifo + color + texto) y el tiempo. Las tareas en vuelo llevan spinner (`clase pulse`, animación de 2 s) y respetan `prefers-reduced-motion`.
+- Todo lo que hace ruido va **colapsado en `<details>`**: el objetivo completo del run, el detalle de cada tarea (ID, rama, summary), **tokens/costo** (el bloque solo existe si hay datos) y la **actividad** de la tarea en curso y del orquestador.
+- **Historial compacto**: los runs anteriores se listan como una línea `título · fecha · resultado` (por ejemplo `31 dic 00:00 · completada · 3/4`) y se despliegan para ver su árbol.
+- **El estado del usuario sobrevive al refresco**: el polling cada **2.5 s** (`fetch('/api/state')`) guarda qué `<details>` estaban abiertos y los reaplica tras repintar, así el historial ya no se colapsa solo.
+- **Feed de actividad en vivo**: cada tarea en curso muestra sus últimas **8 acciones reales** (`tool` + argumento principal truncado a 80 caracteres + `hace Xs`/`hace Xm`), y el nodo del orquestador tiene su propia sección plegable. Si no hay eventos se indica «sin actividad registrada». El feed vive **en RAM** (nunca persiste ni guarda salidas completas).
 - Cada estado se distingue por **glifo + color + texto** (`⏳ en curso`, `✅ completada`, `❌ falló`, `⏭️ omitida`, `⚠️ sin confirmar`, `⏹️ abortada`): nunca solo por color.
-- Endpoints: `GET /` (página), `GET /api/state` (contrato versionado **`DASHBOARD_STATE_VERSION = 2`**) y `GET /api/health` (`{ ok, service, version, runId? }`).
-- Contrato v2 de `/api/state`: igual que v1 más `active.orchestrator` (`{ label: "orquestador", activity }`) y, **solo en las tareas en vuelo**, `activity: [{ tool, summary, at, ago }]` (máximo 8, en orden cronológico). Las tareas cerradas **no** llevan la clave `activity`; sin eventos el array va vacío, nunca `null`. `at` es epoch en ms y `ago` el texto relativo ya formateado.
+- Endpoints: `GET /` (página), `GET /api/state` (contrato versionado **`DASHBOARD_STATE_VERSION = 4`**) y `GET /api/health` (`{ ok, service, version, runId? }`).
+- Contrato v4 de `/api/state`: como v3 más `title` (título corto, fallback primera línea del objetivo) en el run y en cada tarea, `model` por tarea (string o `{ providerID, id }`), `orchestrator.agent`/`orchestrator.model` y `subsessions` anidadas por tarea/orquestador (`{ id, title, agent, model?, status, glyph, statusText, tone, children }`). `inFlight` pasa a objetos `{ taskId, agent, model, branch, startedAt }`; la vista lo normaliza y sigue aceptando el array de strings de v3 (y pintando con fallbacks si faltan `title`/`model`).
 - `aiapaec_run_status` añade, por cada tarea en curso, la línea `última acción: <tool> → <summary> (hace Xs)` cuando el feed tiene datos (si no, la omite).
 - `aiapaec_orchestrate` y `aiapaec_run_status` muestran la línea `Dashboard: http://127.0.0.1:<puerto>` cuando está activo.
 - Si el puerto está ocupado, consulta `/api/health` del ocupante: si es otra instancia viva **cede** el puerto (aviso por `console.warn`); si es un proceso huérfano **reintenta una vez**. Todo el dashboard es *best-effort*: un fallo suyo nunca rompe una orquestación.
@@ -326,6 +329,7 @@ Puedes desactivar el registro automático con la opción `skills: false` en `ope
 ```bash
 pnpm test             # lint (Biome) + typecheck + pruebas (node:test)
 pnpm run lint         # solo Biome
+pnpm run dashboard    # abre el dashboard (127.0.0.1:4780) en ventana de app
 pnpm run agents:sync  # regenera config/agents.json desde src/agents.ts
 pnpm run agents:install  # además fusiona los agentes en ~/.config/opencode/opencode.json
 ```
