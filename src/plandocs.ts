@@ -74,6 +74,7 @@ export function renderPlanMarkdown(state: PlanDocsState): string {
 
   lines.push("---")
   lines.push(`runId: ${yamlValue(state.runId)}`)
+  if (state.title) lines.push(`title: ${yamlValue(state.title)}`)
   lines.push(`objective: ${yamlValue(state.objective)}`)
   lines.push(`status: ${yamlValue(state.status)}`)
   lines.push(`baseBranch: ${yamlValue(state.baseBranch)}`)
@@ -91,14 +92,15 @@ export function renderPlanMarkdown(state: PlanDocsState): string {
 
   lines.push("## Tareas")
   lines.push("")
-  lines.push("| ID | Agente | Estado | Rama | Depende de |")
-  lines.push("|---|---|---|---|---|")
+  lines.push("| ID | Agente | Estado | Rama | Depende de | Título |")
+  lines.push("|---|---|---|---|---|---|")
   for (const task of state.tasks) {
     const status = taskStatusForPlan(state, task.id)
     const branch = task.branch ? inlineCode(task.branch) : "—"
     const deps = task.dependsOn?.length ? task.dependsOn.join(", ") : "—"
+    const title = task.title?.trim() || "—"
     lines.push(
-      `| ${escapeCell(task.id)} | ${escapeCell(task.agent)} | ${statusIcon(status)} ${status} | ${branch} | ${escapeCell(deps)} |`,
+      `| ${escapeCell(task.id)} | ${escapeCell(task.agent)} | ${statusIcon(status)} ${status} | ${branch} | ${escapeCell(deps)} | ${escapeCell(title)} |`,
     )
   }
   lines.push("")
@@ -119,7 +121,7 @@ export function renderPlanMarkdown(state: PlanDocsState): string {
 function taskStatusForPlan(state: PlanDocsState, taskId: string): TaskStatus | "running" {
   const result = state.results.find((entry) => entry.taskId === taskId)
   if (result) return result.status
-  if (state.inFlight.includes(taskId)) return "running"
+  if (state.inFlight.some((entry) => entry.taskId === taskId)) return "running"
   return "skipped"
 }
 

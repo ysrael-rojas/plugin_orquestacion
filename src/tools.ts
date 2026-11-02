@@ -5,7 +5,9 @@ import { detectEngram, formatEngramStatus } from "./engram"
 import { getRun, pruneRuns, recentRuns, saveRun } from "./history"
 import { planDocsRelativePath, statusIcon, writePlanDocs } from "./plandocs"
 import { runOrchestration, validateTasks } from "./runner"
+import { DEFAULT_MODEL_LABEL, inFlightEntries, shortTitle, toInFlightTask } from "./types"
 import type {
+  InFlightTask,
   OrchestrateInput,
   PlanDocsState,
   PluginCtx,
@@ -62,6 +64,11 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             type: "string",
             description: "Objetivo global de la orquestación.",
           },
+          title: {
+            type: "string",
+            description:
+              "Título corto del run para el árbol del dashboard (por defecto, la primera línea del objective).",
+          },
           tasks: {
             type: "array",
             minItems: 1,
@@ -74,6 +81,11 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
                   description: "Agente destino: contexto | explorador | coder | qa | deployer.",
                 },
                 objective: { type: "string", description: "Objetivo concreto de la subtarea." },
+                title: {
+                  type: "string",
+                  description:
+                    "Título corto del nodo en el árbol (por defecto, la primera línea del objective).",
+                },
                 dependsOn: {
                   type: "array",
                   items: { type: "string" },
@@ -191,9 +203,15 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
 
         // qaLevel se normaliza antes de validar: el declarado manda, ausente es
         // L2 y un valor inválido cae a L2 con aviso (no aborta el plan).
+        // Los títulos del árbol se resuelven aquí una sola vez: declarado o
+        // primera línea del objective (60 caracteres).
         const normalizedQa = normalizeQaLevels(payload.tasks ?? [])
-        const tasks = normalizedQa.tasks
+        const tasks: TaskSpec[] = normalizedQa.tasks.map((task) => ({
+          ...task,
+          title: normalizeTitle(task.title) ?? shortTitle(task.objective),
+        }))
         const qaLevelWarnings = normalizedQa.warnings
+        const runTitle = normalizeTitle(payload.title) ?? shortTitle(payload.objective)
 
         const knownAgents = await listAgentIds(ctx)
         if (!knownAgents) {
@@ -264,12 +282,13 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           feed.register(parentSessionID, "orquestador", { runId, role: "orchestrator" })
         }
 
-        const inFlight: string[] = []
+        const inFlight: InFlightTask[] = []
         let latestResults: readonly TaskResult[] = []
 
         const base: RunRecord = {
           runId,
           objective: payload.objective,
+          title: runTitle,
           baseBranch: settings.baseBranch,
           startedAt,
           status: "running",
@@ -296,6 +315,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             folder: settings.planDocs,
             runId,
             objective: payload.objective,
+            title: runTitle,
             baseBranch: settings.baseBranch,
             startedAt,
             status: "running",
@@ -304,6 +324,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
               id: task.id,
               agent: task.agent,
               objective: task.objective,
+              title: task.title,
               branch: task.branch,
               dependsOn: task.dependsOn,
             })),
@@ -341,7 +362,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             const decorated = withTaskMetadata(results, tasks)
             latestResults = decorated
             const finished = new Set(decorated.map((entry) => entry.taskId))
-            const pending = inFlight.filter((id) => !finished.has(id))
+            const pending = inFlight.filter((entry) => !finished.has(entry.taskId))
             for (const entry of decorated) {
               if (entry.sessionID) feed.unregister(entry.sessionID)
             }
@@ -365,9 +386,30 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
               // best-effort
             }
           },
-          onTaskStart: async ({ taskId, sessionID }) => {
-            if (!inFlight.includes(taskId)) inFlight.push(taskId)
-            if (sessionID) feed.register(sessionID, taskId, { runId, taskId, role: "task" })
+          onTaskStart: async ({ taskId, agent, branch, sessionID, model, title, startedAt }) => {
+            if (!inFlight.some((entry) => entry.taskId === taskId)) {
+              inFlight.push(
+                toInFlightTask({
+                  taskId,
+                  agent,
+                  ...(model ? { model } : {}),
+                  ...(branch ? { branch } : {}),
+                  ...(startedAt ? { startedAt } : {}),
+                  ...(title ? { title } : {}),
+                }),
+              )
+            }
+            if (sessionID) {
+              feed.register(sessionID, taskId, {
+                runId,
+                taskId,
+                role: "task",
+                agent,
+                ...(parentSessionID ? { parentID: parentSessionID } : {}),
+                ...(model ? { model } : {}),
+                ...(title ? { title } : {}),
+              })
+            }
             if (control.planDocs) {
               control.planDocs.inFlight = [...inFlight]
               try {
@@ -736,14 +778,15 @@ function lastActionResolver(record: RunRecord) {
 
 /**
  * Adjunta a cada resultado los metadatos efectivos de su tarea (`qaLevel`
- * declarado o default L2, y las `skills` deduplicadas). El runner no los
- * resuelve: es responsabilidad de la tool, que es quien conoce el `TaskSpec`
- * original y persiste el `RunRecord` que leen `aiapaec_run_status` y el
- * dashboard.
+ * declarado o default L2, las `skills` deduplicadas y el `title` corto). El
+ * runner no los resuelve: es responsabilidad de la tool, que es quien conoce el
+ * `TaskSpec` original y persiste el `RunRecord` que leen `aiapaec_run_status` y
+ * el dashboard. El `model` NO se toca: lo resuelve el runner (modelo real).
  */
 function withTaskMetadata(results: readonly TaskResult[], tasks: readonly TaskSpec[]): TaskResult[] {
   const levels = new Map(tasks.map((task) => [task.id, resolveQaLevel(task)]))
   const skills = new Map(tasks.map((task) => [task.id, normalizeSkills(task.skills)]))
+  const titles = new Map(tasks.map((task) => [task.id, task.title ?? shortTitle(task.objective)]))
   return results.map((result) => {
     const declaredSkills = skills.get(result.taskId) ?? []
     const effectiveSkills = declaredSkills.length > 0 ? declaredSkills : result.skills
@@ -752,9 +795,17 @@ function withTaskMetadata(results: readonly TaskResult[], tasks: readonly TaskSp
       qaLevel: isQaLevel(result.qaLevel)
         ? result.qaLevel
         : (levels.get(result.taskId) ?? DEFAULT_QA_LEVEL),
+      ...(result.title ? {} : { title: titles.get(result.taskId) ?? result.taskId }),
       ...(effectiveSkills && effectiveSkills.length > 0 ? { skills: effectiveSkills } : {}),
     }
   })
+}
+
+/** Título declarado normalizado (espacios colapsados, 60 caracteres). */
+function normalizeTitle(raw?: string): string | undefined {
+  if (typeof raw !== "string") return undefined
+  const text = shortTitle(raw)
+  return text || undefined
 }
 
 function normalizeRunId(raw?: string): string | undefined {
@@ -785,7 +836,9 @@ function formatRunRecord(
   const unconfirmed = record.results.filter((result) => result.status === "unconfirmed").length
 
   const lines: string[] = [
-    `## Orquestación — ${record.objective}`,
+    `## Orquestación — ${record.title || shortTitle(record.objective) || record.runId}`,
+    "",
+    `**Objetivo:** ${record.objective}`,
     "",
     `**Run:** \`${record.runId}\` · **Estado:** ${statusIcon(record.status)} ${record.status} · **Progreso:** ${done}/${record.totalTasks}`,
   ]
@@ -806,6 +859,7 @@ function formatRunRecord(
         (part): part is string => typeof part === "string" && part.length > 0,
       )
       if (result.skills && result.skills.length > 0) agentParts.push(result.skills.join("+"))
+      if (result.model) agentParts.push(result.model)
       const agent = agentParts.join(" · ")
       lines.push(
         `| ${escapeCell(result.taskId)} | ${escapeCell(agent)} | ${statusIcon(result.status)} ${result.status} | ${time} | ${escapeCell(result.branch ?? "—")} |`,
@@ -813,7 +867,7 @@ function formatRunRecord(
     }
 
     for (const result of record.results) {
-      lines.push("", `### ${result.taskId} — ${result.agent}`)
+      lines.push("", `### ${result.taskId} — ${result.title || result.agent}`)
       if (result.status === "succeeded") {
         lines.push(result.summary ?? "(sin resumen)")
         if (result.sessionID) lines.push("", `*Sesión: ${result.sessionID}*`)
@@ -842,17 +896,25 @@ function formatRunRecord(
   }
 
   if (record.status === "running") {
-    const running = record.inFlight ?? []
+    const running = inFlightEntries(record.inFlight)
     if (running.length > 0) {
-      lines.push("", `**En curso:** ${running.join(", ")}`)
-      for (const taskId of running) {
-        const last = options.lastAction?.(taskId)
-        if (!last) continue
-        lines.push(
-          `- \`${escapeCell(taskId)}\` · última acción: ${escapeCell(last.tool)} → ${escapeCell(
-            last.summary || "(sin argumentos)",
-          )} (${escapeCell(last.ago)})`,
-        )
+      lines.push(
+        "",
+        `**En curso:** ${running
+          .map((entry) => `\`${entry.taskId}\` (${entry.agent} · ${entry.model ?? DEFAULT_MODEL_LABEL})`)
+          .join(", ")}`,
+      )
+      for (const entry of running) {
+        const detail = [entry.title, entry.agent, entry.model ?? DEFAULT_MODEL_LABEL]
+          .filter((part): part is string => typeof part === "string" && part.length > 0)
+          .join(" · ")
+        const last = options.lastAction?.(entry.taskId)
+        const action = last
+          ? ` · última acción: ${escapeCell(last.tool)} → ${escapeCell(
+              last.summary || "(sin argumentos)",
+            )} (${escapeCell(last.ago)})`
+          : ""
+        lines.push(`- \`${escapeCell(entry.taskId)}\`${detail ? ` · ${escapeCell(detail)}` : ""}${action}`)
       }
     }
     lines.push(
@@ -881,7 +943,7 @@ function formatRunsList(runs: RunRecord[]): string {
 
   for (const run of runs) {
     lines.push(
-      `| \`${run.runId}\` | ${escapeCell(run.objective)} | ${statusIcon(run.status)} ${run.status} | ${run.results.length}/${run.totalTasks} |`,
+      `| \`${run.runId}\` | ${escapeCell(run.title || shortTitle(run.objective) || "—")} | ${statusIcon(run.status)} ${run.status} | ${run.results.length}/${run.totalTasks} |`,
     )
   }
 

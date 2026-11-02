@@ -6,10 +6,18 @@
  * con las últimas acciones reales (herramienta + argumento principal). Nunca
  * persiste nada ni guarda salidas completas: solo `{ tool, summary, at }`.
  *
+ * **Cascada**: además, si llega un `session.created` cuyo `parentID` es una
+ * sesión ya observada, la hija se registra sola (rol `sub`) heredando run,
+ * tarea y agente, y tomando modelo y título del propio evento. Así se ve el
+ * árbol de sub-sesiones que abre un subagente sin instrumentar nada más.
+ *
  * Todo es best-effort: un evento que falla no corta el bucle y una sesión no
- * registrada se ignora. Si el stream no existe (tests, runtime sin eventos) el
- * feed queda vacío y el dashboard muestra "sin actividad registrada".
+ * registrada (y sin padre observado) se ignora. Si el stream no existe (tests,
+ * runtime sin eventos) el feed queda vacío y el dashboard muestra "sin
+ * actividad registrada".
  */
+
+import { modelLabel } from "./types"
 
 /** Cuántas acciones se conservan por sesión (ring buffer). */
 export const ACTIVITY_BUFFER_SIZE = 8
@@ -34,7 +42,35 @@ export interface ActivityRegistration {
   /** Tarea del run, si la sesión es una tarea hija. */
   taskId?: string
   /** Rol de la sesión dentro del run. */
-  role?: "orchestrator" | "task"
+  role?: ActivityRole
+  /** Título corto del nodo (para el árbol del dashboard). */
+  title?: string
+  /** Agente que atiende la sesión. */
+  agent?: string
+  /** Modelo esperado/real (`providerID/modelID`). */
+  model?: string
+  /** Sesión padre (la cascada registra hijas con este vínculo). */
+  parentID?: string
+}
+
+/** Rol de una sesión observada: orquestador, tarea del plan o sub-sesión en cascada. */
+export type ActivityRole = "orchestrator" | "task" | "sub"
+
+/**
+ * Resumen de una sesión observada (sin el ring buffer interno).
+ * Alimenta las sub-sesiones anidadas del contrato v4.
+ */
+export interface SessionSummary {
+  id: string
+  label?: string
+  title?: string
+  agent?: string
+  model?: string
+  role?: ActivityRole
+  taskId?: string
+  parentID?: string
+  /** Acciones propias de la sesión (no incluye las de sus hijas). */
+  activity: ActivityItem[]
 }
 
 /** Fuente de actividad que consume el view-model del dashboard. */
@@ -55,7 +91,11 @@ interface SessionBuffer {
   label?: string
   runId?: string
   taskId?: string
-  role?: "orchestrator" | "task"
+  role?: ActivityRole
+  title?: string
+  agent?: string
+  model?: string
+  parentID?: string
   items: ActivityItem[]
   /** Nombre de herramienta por id de llamada (llega en `tool.input.started`). */
   pending: Map<string, string>
@@ -135,7 +175,12 @@ export class ActivityFeed {
       if (label !== undefined) existing.label = label
       if (meta.runId !== undefined) existing.runId = meta.runId
       if (meta.taskId !== undefined) existing.taskId = meta.taskId
-      if (role !== undefined) existing.role = role
+      if (meta.parentID !== undefined) existing.parentID = meta.parentID
+      if (meta.title !== undefined) existing.title = meta.title
+      if (meta.agent !== undefined) existing.agent = meta.agent
+      if (meta.model !== undefined) existing.model = meta.model
+      // La cascada no degrada una sesión que ya es tarea u orquestador.
+      if (role !== undefined && !(existing.role && role === "sub")) existing.role = role
       return
     }
 
@@ -144,6 +189,10 @@ export class ActivityFeed {
       runId: meta.runId,
       taskId: meta.taskId,
       role,
+      title: meta.title,
+      agent: meta.agent,
+      model: meta.model,
+      parentID: meta.parentID,
       items: [],
       pending: new Map(),
       emitted: new Map(),
@@ -203,6 +252,34 @@ export class ActivityFeed {
     return this.sessions.has(asText(sessionID))
   }
 
+  /** Metadatos + actividad propia de una sesión observada. */
+  sessionInfo(sessionID: string): SessionSummary | undefined {
+    const id = asText(sessionID)
+    const buffer = this.sessions.get(id)
+    return buffer ? summarizeSession(id, buffer) : undefined
+  }
+
+  /** Sesiones observadas de un run, en orden de registro. */
+  sessionsForRun(runId: string): SessionSummary[] {
+    if (!runId) return []
+    const summaries: SessionSummary[] = []
+    for (const [id, buffer] of this.sessions) {
+      if (buffer.runId === runId) summaries.push(summarizeSession(id, buffer))
+    }
+    return summaries
+  }
+
+  /** Sub-sesiones directas de una sesión observada, en orden de registro. */
+  childrenOf(sessionID: string): SessionSummary[] {
+    const id = asText(sessionID)
+    if (!id) return []
+    const children: SessionSummary[] = []
+    for (const [childID, buffer] of this.sessions) {
+      if (buffer.parentID === id) children.push(summarizeSession(childID, buffer))
+    }
+    return children
+  }
+
   /** Corta la suscripción y vacía todos los buffers. */
   cleanup(): void {
     this.closed = true
@@ -227,6 +304,13 @@ export class ActivityFeed {
     if (!type) return
 
     const data = (record.data ?? {}) as Record<string, any>
+
+    // Cascada: la hija de una sesión observada entra al feed por su cuenta.
+    if (type === "session.created") {
+      this.cascade(data)
+      return
+    }
+
     const sessionID = asText(data.sessionID) ?? asText(record.sessionID)
     if (!sessionID) return
     const buffer = this.sessions.get(sessionID)
@@ -252,6 +336,32 @@ export class ActivityFeed {
       if (callID) buffer.pending.delete(callID)
       this.emit(buffer, callID, { tool, summary: summarizeToolInput(data.input), at: eventTime(record) })
     }
+  }
+
+  /**
+   * Auto-registro de una sub-sesión cuyo padre ya se observa. El evento
+   * `session.created` trae `sessionID`, `parentID`, `title`, `agent` y `model`;
+   * el título corto del nodo viaja en `metadata.title` cuando el runner lo puso.
+   */
+  private cascade(data: Record<string, any>): void {
+    const id = asText(data.sessionID)
+    const parentID = asText(data.parentID)
+    if (!id || !parentID) return
+
+    const parent = this.sessions.get(parentID)
+    if (!parent) return
+
+    const metadata = (data.metadata ?? {}) as Record<string, any>
+    const title = asText(metadata.title) || asText(data.title) || parent.title
+    this.register(id, title || undefined, {
+      runId: parent.runId,
+      taskId: parent.taskId,
+      role: "sub",
+      parentID,
+      agent: asText(data.agent) || parent.agent,
+      model: modelLabel(data.model) ?? parent.model,
+      title: title || undefined,
+    })
   }
 
   private emit(buffer: SessionBuffer, callID: string | undefined, item: ActivityItem): void {
@@ -363,4 +473,19 @@ function trimMap(map: Map<string, string>): void {
 
 function cloneItem(item: ActivityItem): ActivityItem {
   return { tool: item.tool, summary: item.summary, at: item.at }
+}
+
+/** Proyección pública de una sesión observada (sin los mapas internos). */
+function summarizeSession(id: string, buffer: SessionBuffer): SessionSummary {
+  return {
+    id,
+    ...(buffer.label !== undefined ? { label: buffer.label } : {}),
+    ...(buffer.title !== undefined ? { title: buffer.title } : {}),
+    ...(buffer.agent !== undefined ? { agent: buffer.agent } : {}),
+    ...(buffer.model !== undefined ? { model: buffer.model } : {}),
+    ...(buffer.role !== undefined ? { role: buffer.role } : {}),
+    ...(buffer.taskId !== undefined ? { taskId: buffer.taskId } : {}),
+    ...(buffer.parentID !== undefined ? { parentID: buffer.parentID } : {}),
+    activity: buffer.items.map(cloneItem),
+  }
 }

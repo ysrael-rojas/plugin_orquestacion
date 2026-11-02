@@ -2,6 +2,7 @@ import { dirname, join } from "node:path"
 
 import { buildTaskPrompt, extractReport } from "./contracts"
 import { buildSessionPermissions } from "./permissions"
+import { modelLabel, shortTitle } from "./types"
 import type {
   OrchestrateInput,
   PluginCtx,
@@ -40,6 +41,12 @@ export interface RunnerOptions {
     branch: string
     /** Sesión hija ya creada (la usa el feed de actividad). */
     sessionID?: string
+    /** Modelo esperado: override de la tarea o el del agente (`providerID/modelID`). */
+    model?: string
+    /** Título corto del nodo (declarado o derivado del objective). */
+    title?: string
+    /** ISO de creación de la sesión hija. */
+    startedAt?: string
   }) => void | Promise<void>
 }
 
@@ -238,6 +245,9 @@ interface TaskRunOptions {
     agent: string
     branch: string
     sessionID?: string
+    model?: string
+    title?: string
+    startedAt?: string
   }) => void | Promise<void>
 }
 
@@ -247,7 +257,9 @@ async function executeTask(
   options: TaskRunOptions,
 ): Promise<TaskResult> {
   const branch = task.branch ?? `feat/${task.id}`
+  const title = task.title?.trim() || shortTitle(task.objective)
   const started = Date.now()
+  const startedAt = new Date(started).toISOString()
   let sessionID: string | undefined
   let worktreeDirectory: string | undefined
 
@@ -257,6 +269,7 @@ async function executeTask(
       agent: task.agent,
       status: "skipped",
       branch,
+      title,
       error: "Run abortado por el usuario",
     }
   }
@@ -274,6 +287,7 @@ async function executeTask(
         agent: task.agent,
         status: "failed",
         branch,
+        title,
         error: "La tarea pide permisos sensibles pero no hay sesión orquestadora para el gate.",
       }
     }
@@ -295,6 +309,10 @@ async function executeTask(
       }
     }
   }
+
+  // Modelo esperado: el override de la tarea manda; si no, el que declara el
+  // agente en opencode.json (`agent.get` es opcional y puede faltar).
+  const expectedModel = modelLabel(task.model) ?? (await agentDefaultModel(ctx, task.agent))
 
   try {
     if (task.worktree) {
@@ -324,15 +342,25 @@ async function executeTask(
         runId: options.runId,
         taskId: task.id,
         objective: options.runObjective,
+        // Título corto: la cascada del feed lo usa como nombre del nodo.
+        title,
       },
-      ...(task.model ? { model: parseModelRef(task.model) } : {}),
+      ...(expectedModel ? { model: parseModelRef(expectedModel) } : {}),
     })
 
     sessionID = created.id
     options.control?.sessions.add(sessionID)
 
     try {
-      await options.onTaskStart?.({ taskId: task.id, agent: task.agent, branch, sessionID })
+      await options.onTaskStart?.({
+        taskId: task.id,
+        agent: task.agent,
+        branch,
+        sessionID,
+        startedAt,
+        title,
+        ...(expectedModel ? { model: expectedModel } : {}),
+      })
     } catch {
       // El avance es informativo.
     }
@@ -372,6 +400,9 @@ async function executeTask(
     const report = extractReport(text)
     const summary = pickString(report, "summary") ?? firstLine(text) ?? "(sin respuesta)"
     const reportStatus = pickString(report, "status")?.toLowerCase()
+    // Modelo REAL con el que respondió el assistant (puede diferir del esperado
+    // si el runtime resolvió otro). El SDK lo declara obligatorio.
+    const realModel = modelLabel(message?.model) ?? expectedModel
 
     const baseResult: Omit<TaskResult, "status"> = {
       taskId: task.id,
@@ -379,6 +410,8 @@ async function executeTask(
       sessionID,
       branch: pickString(report, "artifacts.git_branch") ?? branch,
       worktreeDirectory,
+      title,
+      ...(realModel ? { model: realModel } : {}),
       ...(needsGate ? { gated: true } : {}),
       report,
       latencyMs: Date.now() - started,
@@ -420,6 +453,8 @@ async function executeTask(
       sessionID,
       branch,
       worktreeDirectory,
+      title,
+      ...(expectedModel ? { model: expectedModel } : {}),
       latencyMs: Date.now() - started,
       error: aborted
         ? "Run abortado por el usuario"
@@ -441,16 +476,35 @@ async function executeTask(
   }
 }
 
-function parseModelRef(raw: string): { providerID: string; id: string } {
+function parseModelRef(raw: string): { providerID: string; id: string; variant?: string } {
   const slash = raw.indexOf("/")
   if (slash <= 0) {
     throw new Error(
       `Modelo inválido "${raw}". Usa el formato "providerID/modelID", por ejemplo "opencode-go/glm-5.3-flash".`,
     )
   }
-  return {
-    providerID: raw.slice(0, slash),
-    id: raw.slice(slash + 1),
+  const providerID = raw.slice(0, slash)
+  const rest = raw.slice(slash + 1)
+  const hash = rest.indexOf("#")
+  if (hash <= 0) return { providerID, id: rest }
+  return { providerID, id: rest.slice(0, hash), variant: rest.slice(hash + 1) }
+}
+
+/**
+ * Modelo por defecto del agente según `agent.get({ agentID })` (`AgentInfo.model`).
+ * Es best-effort: un runtime sin `agent.get` o sin modelo devuelve `undefined`
+ * y el dashboard muestra `default`.
+ */
+async function agentDefaultModel(ctx: PluginCtx, agentID: string): Promise<string | undefined> {
+  const get = ctx.agent?.get
+  if (typeof get !== "function") return undefined
+
+  try {
+    const output: any = await get.call(ctx.agent, { agentID })
+    const info = output?.data ?? output
+    return modelLabel(info?.model)
+  } catch {
+    return undefined
   }
 }
 
