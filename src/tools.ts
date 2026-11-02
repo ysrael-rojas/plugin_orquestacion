@@ -1,6 +1,6 @@
 import { AGENTS } from "./agents"
 import { formatTimeAgo, getActivityFeed, type ActivityEventCtx } from "./activity"
-import { DEFAULT_QA_LEVEL, isQaLevel, normalizeQaLevels, resolveQaLevel } from "./contracts"
+import { DEFAULT_QA_LEVEL, isQaLevel, normalizeQaLevels, normalizeSkills, resolveQaLevel } from "./contracts"
 import { detectEngram, formatEngramStatus } from "./engram"
 import { getRun, pruneRuns, recentRuns, saveRun } from "./history"
 import { planDocsRelativePath, statusIcon, writePlanDocs } from "./plandocs"
@@ -92,6 +92,13 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
                     "L2 = estándar (validación contra el spec del contrato con evidencia); " +
                     "L3 = forense (L2 + supuestos técnicos verificados contra fuentes reales, p. ej. los .d.ts del SDK). " +
                     "Un valor inválido cae a L2 con aviso.",
+                },
+                skills: {
+                  type: "array",
+                  items: { type: "string" },
+                  description:
+                    "Skills que el orquestador declara para la tarea (ej. tdd, code-review). " +
+                    "Se deduplican; un valor inválido se descarta sin abortar el plan.",
                 },
                 scope: {
                   type: "object",
@@ -331,7 +338,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           taskTimeoutMs: settings.taskTimeoutMs,
           control,
           onUpdate: async ({ results }) => {
-            const decorated = withQaLevels(results, tasks)
+            const decorated = withTaskMetadata(results, tasks)
             latestResults = decorated
             const finished = new Set(decorated.map((entry) => entry.taskId))
             const pending = inFlight.filter((id) => !finished.has(id))
@@ -384,7 +391,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           .then(async (result): Promise<RunRecord> => {
             activeRuns.delete(runId)
             feed.unregisterRun(runId)
-            const finalResults = withQaLevels(result.results, tasks)
+            const finalResults = withTaskMetadata(result.results, tasks)
             const record: RunRecord = {
               ...base,
               finishedAt: result.finishedAt,
@@ -728,19 +735,26 @@ function lastActionResolver(record: RunRecord) {
 }
 
 /**
- * Adjunta a cada resultado el `qaLevel` efectivo de su tarea (declarado o
- * default L2). El runner no lo resuelve: es responsabilidad de la tool, que es
- * quien conoce el `TaskSpec` original y persiste el `RunRecord` que leen
- * `aiapaec_run_status` y el dashboard.
+ * Adjunta a cada resultado los metadatos efectivos de su tarea (`qaLevel`
+ * declarado o default L2, y las `skills` deduplicadas). El runner no los
+ * resuelve: es responsabilidad de la tool, que es quien conoce el `TaskSpec`
+ * original y persiste el `RunRecord` que leen `aiapaec_run_status` y el
+ * dashboard.
  */
-function withQaLevels(results: readonly TaskResult[], tasks: readonly TaskSpec[]): TaskResult[] {
+function withTaskMetadata(results: readonly TaskResult[], tasks: readonly TaskSpec[]): TaskResult[] {
   const levels = new Map(tasks.map((task) => [task.id, resolveQaLevel(task)]))
-  return results.map((result) => ({
-    ...result,
-    qaLevel: isQaLevel(result.qaLevel)
-      ? result.qaLevel
-      : (levels.get(result.taskId) ?? DEFAULT_QA_LEVEL),
-  }))
+  const skills = new Map(tasks.map((task) => [task.id, normalizeSkills(task.skills)]))
+  return results.map((result) => {
+    const declaredSkills = skills.get(result.taskId) ?? []
+    const effectiveSkills = declaredSkills.length > 0 ? declaredSkills : result.skills
+    return {
+      ...result,
+      qaLevel: isQaLevel(result.qaLevel)
+        ? result.qaLevel
+        : (levels.get(result.taskId) ?? DEFAULT_QA_LEVEL),
+      ...(effectiveSkills && effectiveSkills.length > 0 ? { skills: effectiveSkills } : {}),
+    }
+  })
 }
 
 function normalizeRunId(raw?: string): string | undefined {
@@ -788,7 +802,11 @@ function formatRunRecord(
     lines.push("", "| Tarea | Agente | Estado | Tiempo | Rama |", "|---|---|---|---|---|")
     for (const result of record.results) {
       const time = result.latencyMs ? `${(result.latencyMs / 1000).toFixed(1)}s` : "—"
-      const agent = result.qaLevel ? `${result.agent} · ${result.qaLevel}` : result.agent
+      const agentParts = [result.agent, result.qaLevel].filter(
+        (part): part is string => typeof part === "string" && part.length > 0,
+      )
+      if (result.skills && result.skills.length > 0) agentParts.push(result.skills.join("+"))
+      const agent = agentParts.join(" · ")
       lines.push(
         `| ${escapeCell(result.taskId)} | ${escapeCell(agent)} | ${statusIcon(result.status)} ${result.status} | ${time} | ${escapeCell(result.branch ?? "—")} |`,
       )
