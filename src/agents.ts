@@ -111,7 +111,7 @@ export const AGENTS: Record<string, AgentDefinition> = {
   },
   contexto: {
     mode: "subagent",
-    model: "opencode-go/glm-5.3-flash",
+    model: "opencode-go/deepseek-v4.1-flash",
     description:
       "Subagente de Contexto: filtra memoria Engram y entrega reportes concisos (<300 tokens).",
     system: CONTEXTO,
@@ -125,7 +125,7 @@ export const AGENTS: Record<string, AgentDefinition> = {
   },
   coder: {
     mode: "subagent",
-    model: "opencode-go/kimi-k2.7-code",
+    model: "opencode-go/deepseek-v4.1-flash",
     description:
       "Subagente Creador: implementa código en ramas aisladas derivadas de la rama de desarrollo.",
     system: CODER,
@@ -139,7 +139,7 @@ export const AGENTS: Record<string, AgentDefinition> = {
   },
   deployer: {
     mode: "subagent",
-    model: "opencode-go/glm-5.3-flash",
+    model: "opencode-go/deepseek-v4.1-flash",
     description:
       "Subagente Deployer: prepara builds y Pull Requests hacia la rama de desarrollo.",
     system: DEPLOYER,
