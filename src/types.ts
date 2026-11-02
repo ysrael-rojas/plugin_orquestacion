@@ -3,6 +3,10 @@
  *
  * El plugin usa un tipo estructural mínimo del contexto para mantener el
  * código legible y no acoplarse a los tipos internos de Effect.
+ *
+ * Además de tipos, expone dos helpers puros que comparten varias capas
+ * (`shortTitle` y `modelLabel`): así el árbol del dashboard, el runner y las
+ * tools formatean títulos y modelos de la misma manera.
  */
 
 export interface TaskScope {
@@ -44,6 +48,11 @@ export interface TaskSpec {
   agent: string
   /** Objetivo concreto de la subtarea. */
   objective: string
+  /**
+   * Título corto del nodo en el árbol del dashboard.
+   * Fallback: primera línea del `objective` truncada a 60 caracteres (ver `shortTitle`).
+   */
+  title?: string
   /** IDs de subtareas que deben completarse antes. */
   dependsOn?: string[]
   /** Rama de trabajo; por defecto `feat/<id>`. */
@@ -69,6 +78,8 @@ export interface TaskSpec {
 
 export interface OrchestrateInput {
   objective: string
+  /** Título corto del run en el árbol del dashboard (fallback: `objective`). */
+  title?: string
   tasks: TaskSpec[]
   /** Si es true, conserva las sesiones hijas para inspección. */
   keepSessions?: boolean
@@ -78,6 +89,81 @@ export interface OrchestrateInput {
 
 export type TaskStatus = "succeeded" | "failed" | "skipped" | "unconfirmed"
 
+/**
+ * Campos de una tarea en vuelo: el runner la registra al crear la sesión hija
+ * y la tool la persiste en `RunRecord.inFlight` mientras el run está `running`.
+ */
+export interface InFlightTaskFields {
+  taskId: string
+  agent: string
+  /** Modelo esperado (`providerID/modelID`); ausente si el agente no declara uno. */
+  model?: string
+  branch?: string
+  /** ISO de creación de la sesión hija. */
+  startedAt?: string
+  /** Título corto del nodo (fallback: `taskId`). */
+  title?: string
+}
+
+/**
+ * Tarea en vuelo del contrato v4. **En runtime siempre es un objeto**
+ * (`{ taskId, agent, model?, branch?, startedAt? }`), no un string.
+ *
+ * La intersección con `string` es un puente transitorio: el view-model v3
+ * (`dashboard-view.ts`, que reescribe la tarea de UI) todavía lee
+ * `RunRecord.inFlight` como si fueran IDs. Construye estos valores con
+ * `toInFlightTask` y normalízalos al leer con `inFlightEntries`; nunca asignes
+ * un string a este tipo.
+ */
+export type InFlightTask = string & InFlightTaskFields
+
+/** Construye una tarea en vuelo del contrato v4 (ver nota del tipo). */
+export function toInFlightTask(fields: InFlightTaskFields): InFlightTask {
+  return fields as unknown as InFlightTask
+}
+
+/**
+ * Normaliza `RunRecord.inFlight` sea cual sea su generación: objetos v4 u
+ * `string[]` heredados del historial v3. Devuelve siempre objetos.
+ */
+export function inFlightEntries(raw: unknown): InFlightTask[] {
+  if (!Array.isArray(raw)) return []
+
+  const entries: InFlightTask[] = []
+  for (const entry of raw) {
+    if (typeof entry === "string") {
+      const taskId = entry.trim()
+      if (taskId) entries.push(toInFlightTask({ taskId, agent: "—" }))
+      continue
+    }
+    if (!entry || typeof entry !== "object") continue
+
+    const record = entry as Record<string, unknown>
+    const taskId = text(record.taskId)
+    if (!taskId) continue
+
+    const model = text(record.model)
+    const branch = text(record.branch)
+    const startedAt = text(record.startedAt)
+    const title = text(record.title)
+    entries.push(
+      toInFlightTask({
+        taskId,
+        agent: text(record.agent) ?? "—",
+        ...(model ? { model } : {}),
+        ...(branch ? { branch } : {}),
+        ...(startedAt ? { startedAt } : {}),
+        ...(title ? { title } : {}),
+      }),
+    )
+  }
+  return entries
+}
+
+function text(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined
+}
+
 export interface TaskResult {
   taskId: string
   agent: string
@@ -85,6 +171,10 @@ export interface TaskResult {
   sessionID?: string
   branch?: string
   worktreeDirectory?: string
+  /** Título corto del nodo en el árbol (declarado en el `TaskSpec` o derivado del objective). */
+  title?: string
+  /** Modelo REAL con el que respondió el assistant de la sesión hija (`providerID/modelID`). */
+  model?: string
   /** Nivel de QA efectivo de la tarea (L1/L2/L3); el runner no lo resuelve, lo adjunta la tool. */
   qaLevel?: QaLevel
   /** Skills efectivas de la tarea (deduplicadas); las adjunta la tool al persistir el resultado. */
@@ -104,13 +194,18 @@ export interface TaskResult {
 export interface RunRecord {
   runId: string
   objective: string
+  /** Título corto del run en el árbol (fallback: `objective`). */
+  title?: string
   baseBranch: string
   startedAt: string
   finishedAt?: string
   status: "running" | "completed" | "failed" | "aborted"
   totalTasks: number
-  /** Tareas actualmente en vuelo (solo mientras el run está running). */
-  inFlight?: string[]
+  /**
+   * Tareas actualmente en vuelo (solo mientras el run está running).
+   * Desde el contrato v4 son objetos con agente y modelo, no solo IDs.
+   */
+  inFlight?: InFlightTask[]
   results: TaskResult[]
   error?: string
   /** Advertencias acumuladas de escrituras best-effort del documento de plan. */
@@ -131,6 +226,8 @@ export interface PlanDocsTaskSpec {
   id: string
   agent: string
   objective: string
+  /** Título corto de la tarea (fallback: primera línea del objective). */
+  title?: string
   branch?: string
   dependsOn?: string[]
 }
@@ -140,6 +237,8 @@ export interface PlanDocsState {
   folder: string
   runId: string
   objective: string
+  /** Título corto del run. */
+  title?: string
   baseBranch: string
   startedAt: string
   finishedAt?: string
@@ -147,7 +246,7 @@ export interface PlanDocsState {
   contextSummary?: string
   tasks: PlanDocsTaskSpec[]
   results: TaskResult[]
-  inFlight: string[]
+  inFlight: InFlightTask[]
 }
 
 export interface PermissionRule {
@@ -193,6 +292,12 @@ export interface PluginCtx {
   }
   agent: {
     list(input?: any): Promise<any>
+    /**
+     * Info del agente (`AgentInfo`), incluido su `model?` por defecto.
+     * El dominio real expone `agent.get({ agentID })`; es opcional para
+     * contextos de prueba antiguos.
+     */
+    get?(input: any): Promise<any> | any
   }
   command: {
     transform(cb: (editor: any) => void): Promise<{ dispose?: () => Promise<void> }>
@@ -223,4 +328,52 @@ export interface PluginOptions {
    * `0` desactiva el dashboard; un valor inválido cae a `4780` con warning.
    */
   dashboardPort?: number
+}
+
+/** Longitud máxima de un título corto derivado del objective. */
+export const SHORT_TITLE_MAX = 60
+
+/** Etiqueta de modelo cuando el agente no declara uno (`ctx.agent.get` sin `model`). */
+export const DEFAULT_MODEL_LABEL = "default"
+
+/**
+ * Título corto para un nodo del árbol: primera línea, espacios colapsados y
+ * truncado a `max` caracteres (con elipsis).
+ *
+ * Vive aquí porque lo comparten `tools`, `runner` y `dashboard`; es puro y no
+ * depende de ningún dominio.
+ */
+export function shortTitle(value: string | undefined, max = SHORT_TITLE_MAX): string {
+  // Primera línea con contenido: el fallback nunca arrastra el resto del prompt.
+  const line = (value ?? "").split(/\r?\n/).find((entry) => entry.trim()) ?? ""
+  const text = line.replace(/\s+/g, " ").trim()
+  if (!text) return ""
+  if (text.length <= max) return text
+  return `${text.slice(0, Math.max(0, max - 1)).replace(/\s+$/, "")}…`
+}
+
+/**
+ * Etiqueta legible de un modelo (`providerID/modelID`, con `#variant` si la hay).
+ *
+ * Acepta tanto el string `providerID/modelID` que usa `TaskSpec.model` como el
+ * objeto `{ providerID, id, variant? }` del SDK (`AgentInfo.model`,
+ * `SessionMessageAssistant.model` y `session.created`). Devuelve `undefined`
+ * si la referencia no es utilizable (el llamador decide el fallback).
+ */
+export function modelLabel(ref: unknown): string | undefined {
+  if (typeof ref === "string") {
+    const text = ref.trim()
+    return text || undefined
+  }
+  if (!ref || typeof ref !== "object") return undefined
+
+  const record = ref as Record<string, unknown>
+  const provider = typeof record.providerID === "string" ? record.providerID.trim() : ""
+  const id = typeof record.id === "string" ? record.id.trim() : ""
+  if (!provider || !id) return undefined
+
+  const variant = typeof record.variant === "string" && record.variant.trim()
+    ? `#${record.variant.trim()}`
+    : ""
+  return `${provider}/${id}${variant}`
 }
