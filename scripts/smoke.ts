@@ -1539,7 +1539,7 @@ function activitySource(now: Date) {
   }
 }
 
-test("activity: extrae tool y resumen de eventos V2 y de parts, ignorando sesiones no registradas", () => {
+test("activity: extrae tool y resumen de eventos V2, ignorando sesiones no registradas", () => {
   const feed = new ActivityFeed()
   feed.register("ses_a", "T1", { runId: "RUN-A", taskId: "T1" })
 
@@ -1555,21 +1555,6 @@ test("activity: extrae tool y resumen de eventos V2 y de parts, ignorando sesion
     data: { sessionID: "ses_a", id: "call_1", input: { filePath: "src/tools.ts" }, executed: true },
   })
 
-  // Variante V1: part de mensaje con tool part.
-  feed.ingest({
-    type: "message.part.updated",
-    created: 1_700_000_002_000,
-    properties: {
-      part: {
-        id: "part_1",
-        type: "tool",
-        tool: "bash",
-        sessionID: "ses_a",
-        state: { input: { command: "pnpm test" } },
-      },
-    },
-  })
-
   // Sesión no registrada: se ignora.
   feed.ingest({
     type: "session.tool.called",
@@ -1577,15 +1562,12 @@ test("activity: extrae tool y resumen de eventos V2 y de parts, ignorando sesion
   })
 
   const items = feed.getActivity("ses_a")
-  assert.equal(items.length, 2)
+  assert.equal(items.length, 1)
   assert.deepEqual(
     items.map((item) => [item.tool, item.summary]),
-    [
-      ["read", "src/tools.ts"],
-      ["bash", "pnpm test"],
-    ],
+    [["read", "src/tools.ts"]],
   )
-  assert.equal(feed.getLast("ses_a")!.tool, "bash")
+  assert.equal(feed.getLast("ses_a")!.tool, "read")
   assert.deepEqual(feed.getActivity("ses_otra"), [], "una sesión no registrada no acumula nada")
   feed.cleanup()
 })

@@ -226,12 +226,6 @@ export class ActivityFeed {
     const type = asText(record.type)
     if (!type) return
 
-    // Variante V1 de "part de mensaje": trae el tool y su input juntos.
-    if (type === "message.part.updated") {
-      this.ingestPart(record)
-      return
-    }
-
     const data = (record.data ?? {}) as Record<string, any>
     const sessionID = asText(data.sessionID) ?? asText(record.sessionID)
     if (!sessionID) return
@@ -258,27 +252,6 @@ export class ActivityFeed {
       if (callID) buffer.pending.delete(callID)
       this.emit(buffer, callID, { tool, summary: summarizeToolInput(data.input), at: eventTime(record) })
     }
-  }
-
-  private ingestPart(record: Record<string, any>): void {
-    const properties = (record.properties ?? {}) as Record<string, any>
-    const part = properties.part ?? record.part
-    if (!part || typeof part !== "object" || part.type !== "tool") return
-
-    const sessionID =
-      asText(part.sessionID) ?? asText(properties.sessionID) ?? asText(record.sessionID)
-    if (!sessionID) return
-    const buffer = this.sessions.get(sessionID)
-    if (!buffer) return
-
-    const input = part.state?.input ?? part.input
-    const tool = asText(part.tool) ?? asText(part.name) ?? "tool"
-    const callID = asText(part.id) ?? asText(part.callID)
-    this.emit(buffer, callID, {
-      tool,
-      summary: summarizeToolInput(input),
-      at: eventTime(record),
-    })
   }
 
   private emit(buffer: SessionBuffer, callID: string | undefined, item: ActivityItem): void {
