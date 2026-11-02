@@ -188,7 +188,7 @@ function renderTaskRow(task: DashboardTaskRow, showTokens: boolean, colspan: num
 
   const cells = [
     `<td class="mono">${escapeHtml(task.taskId)}</td>`,
-    `<td>${escapeHtml(task.agent)}</td>`,
+    `<td>${escapeHtml(task.agent)}${renderQaBadge(task.qaLevel)}</td>`,
     `<td class="status tone-${escapeHtml(task.tone)}">${statusIcon} <span class="status-text">${escapeHtml(task.statusText)}</span></td>`,
     `<td class="mono">${escapeHtml(task.branch)}</td>`,
     `<td class="num">${escapeHtml(task.time)}</td>`,
@@ -207,6 +207,11 @@ function renderTaskRow(task: DashboardTaskRow, showTokens: boolean, colspan: num
     task.activity ?? [],
     "sin actividad registrada",
   )}</td></tr>`
+}
+
+/** Badge discreto con el nivel de QA de la tarea ("L1"/"L2"/"L3"). */
+function renderQaBadge(qaLevel?: string): string {
+  return qaLevel ? ` <span class="qa-badge">${escapeHtml(qaLevel)}</span>` : ""
 }
 
 /** Lista de acciones (tool + resumen + "hace Xs"). */
@@ -286,7 +291,8 @@ export function renderClientScript(refreshMs: number = DASHBOARD_REFRESH_MS): st
     "  function taskRow(task, showTokens, colspan) {",
     "    var cells = [",
     '      \'<td class="mono">\' + esc(task.taskId) + "</td>",',
-    '      "<td>" + esc(task.agent) + "</td>",',
+    '      "<td>" + esc(task.agent) +',
+    '        (task.qaLevel ? \' <span class="qa-badge">\' + esc(task.qaLevel) + "</span>" : "") + "</td>",',
     "      statusCell(task),",
     '      \'<td class="mono">\' + esc(task.branch) + "</td>",',
     '      \'<td class="num">\' + esc(task.time) + "</td>"',
@@ -450,6 +456,17 @@ main { max-width: 1080px; margin: 0 auto; padding: 0.75rem 1.25rem 2rem; display
 .run-id { color: var(--fg); }
 .run-error { margin: 0.5rem 0; color: var(--failed); font-size: 0.84rem; }
 .status-text { font-weight: 600; }
+.qa-badge {
+  display: inline-block;
+  margin-left: 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 0.4rem;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+  vertical-align: 0.05em;
+}
 .tone-run { color: var(--run); }
 .tone-ok { color: var(--ok); }
 .tone-failed { color: var(--failed); }

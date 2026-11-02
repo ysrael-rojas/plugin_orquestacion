@@ -51,10 +51,11 @@ Con el agente **orquestador** (o `/orquestar`):
 - **Aislamiento**: cada tarea con `worktree: true` corre en su propio git worktree (carpeta + rama), permitiendo varios coder en paralelo.
 - **Scope real**: `strict_scope` bloquea ediciones fuera de `allowed_files`; `forbidden_files`, `write_files`, `bash` y `git commit` son reglas `deny` reales.
 - **Validación**: sin reporte JSON con `status`, la tarea queda `unconfirmed` (⚠️) y sus dependientes no corren.
+- **Niveles de QA**: cada tarea acepta `qaLevel` con tres profundidades —`L1` smoke (solo `pnpm test` con evidencia del comando), `L2` estándar (validación contra el spec con comando + salida y `archivo:línea` en las desviaciones) y `L3` forense (L2 + supuestos técnicos contrastados con fuentes reales, como los `.d.ts` del SDK)—. Default `L2`; un valor inválido cae a `L2` con aviso en la respuesta de `aiapaec_orchestrate`. La definición operativa llega en el prompt solo a las tareas de agente `qa`; el nivel efectivo aparece como `qa · L2` en `aiapaec_run_status` y como badge junto al agente en el dashboard.
 - **Recuperación**: el run vive en el storage (`runs/<runId>`); si la llamada se interrumpe, `run_status` recupera el estado.
 - **Documento de plan**: cada run escribe `docs/plans/<runId>.md` con contexto, tabla de tareas y avance; se actualiza por oleada y se marca `aborted` al cancelar.
-- **Dashboard en vivo**: `http://127.0.0.1:4780` (solo loopback, opción `dashboardPort`) muestra el run activo con progreso `X/Y`, la tabla de tareas (agente, estado, rama, tiempo, tokens/costo) y el historial plegado; se refresca cada 2.5 s. `aiapaec_orchestrate` y `aiapaec_run_status` incluyen la línea `Dashboard: http://127.0.0.1:<puerto>`. Si falla, la orquestación sigue igual: es best-effort.
-- **Feed de actividad**: el plugin escucha los eventos de sesión y guarda en RAM las últimas **8 acciones** de cada sesión registrada (la orquestadora y cada tarea hija), como `tool` + argumento principal truncado a 80 caracteres. Se ve bajo cada tarea ⏳ del dashboard (`hace 5s`), en la sección «Actividad del orquestador» y en la línea `última acción: <tool> → <summary> (hace Xs)` de `aiapaec_run_status`. Nunca guarda salidas completas, no se persiste y no puede romper el run: un evento fallido se ignora. El contrato `/api/state` sube a **v2** (las tareas cerradas no llevan `activity`).
+- **Dashboard en vivo**: `http://127.0.0.1:4780` (solo loopback, opción `dashboardPort`) muestra el run activo con progreso `X/Y`, la tabla de tareas (agente + badge de nivel de QA, estado, rama, tiempo, tokens/costo) y el historial plegado; se refresca cada 2.5 s. `aiapaec_orchestrate` y `aiapaec_run_status` incluyen la línea `Dashboard: http://127.0.0.1:<puerto>`. Si falla, la orquestación sigue igual: es best-effort.
+- **Feed de actividad**: el plugin escucha los eventos de sesión y guarda en RAM las últimas **8 acciones** de cada sesión registrada (la orquestadora y cada tarea hija), como `tool` + argumento principal truncado a 80 caracteres. Se ve bajo cada tarea ⏳ del dashboard (`hace 5s`), en la sección «Actividad del orquestador» y en la línea `última acción: <tool> → <summary> (hace Xs)` de `aiapaec_run_status`. Nunca guarda salidas completas, no se persiste y no puede romper el run: un evento fallido se ignora. El contrato `/api/state` está en **v3** (v2 añadió `activity`; v3 añade `qaLevel` por tarea).
 - **Memoria**: las sesiones hijas llevan `parentID` (atribución al orquestador) y Engram guarda decisiones/hallazgos.
 
 ## Reglas de operación
@@ -71,6 +72,8 @@ Con el agente **orquestador** (o `/orquestar`):
 | Implementar con aislamiento | `coder` con `worktree: true`, `strict_scope` y `allowed_files` |
 | Dos features en paralelo | Dos tareas `coder` independientes (sin `dependsOn`), ambas con `worktree` |
 | Validar antes de publicar | `qa` con `dependsOn` del coder, `write_files: false` |
+| Validar rápido un cambio trivial | `qa` con `qaLevel: "L1"` (solo `pnpm test`) |
+| Validación forense (APIs/eventos del SDK) | `qa` con `qaLevel: "L3"` (contrasta supuestos con los `.d.ts`) |
 | Preparar PR | `deployer` con `push_to_remote: true` (gate de permiso) y `human_approval_required` |
 | Cancelar algo en curso | `aiapaec_run_abort` con el `runId` |
 | Ver historial | `aiapaec_run_status` sin argumentos, o `/aiapaec` en el TUI |

@@ -10,6 +10,15 @@ export interface TaskScope {
   forbidden_files?: string[]
 }
 
+/**
+ * Profundidad de validación de una tarea de QA.
+ *
+ * - `L1`: smoke (solo `pnpm test` con evidencia del comando).
+ * - `L2`: estándar (validación contra el spec del contrato con evidencia).
+ * - `L3`: forense (L2 + supuestos técnicos verificados contra fuentes reales).
+ */
+export type QaLevel = "L1" | "L2" | "L3"
+
 export interface TaskContextInfo {
   summary?: string
   engram_ids?: string[]
@@ -48,6 +57,8 @@ export interface TaskSpec {
   worktree?: boolean
   /** Override de modelo, formato "providerID/modelID". */
   model?: string
+  /** Nivel de exigencia de la validación de QA (default `L2`). */
+  qaLevel?: QaLevel
   metadata?: Record<string, unknown>
 }
 
@@ -69,6 +80,8 @@ export interface TaskResult {
   sessionID?: string
   branch?: string
   worktreeDirectory?: string
+  /** Nivel de QA efectivo de la tarea (L1/L2/L3); el runner no lo resuelve, lo adjunta la tool. */
+  qaLevel?: QaLevel
   /** true si la tarea pasó por un gate de permiso aprobado. */
   gated?: boolean
   /** true si el worktree de la tarea se eliminó al finalizar (cleanup). */

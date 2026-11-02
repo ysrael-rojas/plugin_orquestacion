@@ -8,10 +8,11 @@
  */
 
 import { formatTimeAgo, type ActivityItem, type DashboardActivitySource } from "./activity"
-import type { RunRecord, TaskResult, TaskStatus } from "./types"
+import { isQaLevel } from "./contracts"
+import type { QaLevel, RunRecord, TaskResult, TaskStatus } from "./types"
 
 /** Versión del contrato de `/api/state`. Súbela si cambia la forma. */
-export const DASHBOARD_STATE_VERSION = 2
+export const DASHBOARD_STATE_VERSION = 3
 
 /** Estado de display: unión del estado de run, de tarea y el implícito "pending". */
 export type DisplayStatus = RunRecord["status"] | TaskStatus | "pending"
@@ -22,6 +23,8 @@ export type DisplayTone = "run" | "ok" | "failed" | "skipped" | "warn" | "aborte
 export interface DashboardTaskRow {
   taskId: string
   agent: string
+  /** Nivel de QA efectivo (L1/L2/L3); presente solo si la tarea lo reporta. */
+  qaLevel?: QaLevel
   status: DisplayStatus
   /** Glifo redundante con el texto ("⏳", "✅", "❌", "⏭️", "⚠️"). */
   glyph: string
@@ -193,6 +196,7 @@ function buildTaskRows(
     return {
       taskId: result.taskId,
       agent: result.agent,
+      ...(isQaLevel(result.qaLevel) ? { qaLevel: result.qaLevel } : {}),
       status: result.status,
       glyph: meta.glyph,
       statusText: meta.text,
