@@ -9,6 +9,8 @@
 
 import {
   escapeHtml,
+  type DashboardActivityRow,
+  type DashboardOrchestratorView,
   type DashboardRunView,
   type DashboardState,
   type DashboardTaskRow,
@@ -115,6 +117,7 @@ function renderRunCard(run: DashboardRunView, showTokens: boolean, collapsed: bo
   const body = [
     renderProgress(run),
     run.error ? `<p class="run-error">${escapeHtml(run.error)}</p>` : "",
+    run.orchestrator ? renderOrchestratorActivity(run.orchestrator) : "",
     renderTaskTable(run, showTokens),
   ]
     .filter(Boolean)
@@ -163,8 +166,8 @@ function renderTaskTable(run: DashboardRunView, showTokens: boolean): string {
   const headers = ["ID", "Agente", "Estado", "Rama", "Tiempo"]
   if (showTokens) headers.push("Tokens / costo")
 
-  const rows = run.tasks.map((task) => renderTaskRow(task, showTokens))
   const colspan = headers.length
+  const rows = run.tasks.map((task) => renderTaskRow(task, showTokens, colspan))
 
   return [
     '<table class="tasks">',
@@ -178,7 +181,7 @@ function renderTaskTable(run: DashboardRunView, showTokens: boolean): string {
   ].join("\n")
 }
 
-function renderTaskRow(task: DashboardTaskRow, showTokens: boolean): string {
+function renderTaskRow(task: DashboardTaskRow, showTokens: boolean, colspan: number): string {
   const statusIcon = task.isRunning
     ? '<span class="spinner pulse" aria-hidden="true"></span>'
     : `<span class="glyph" aria-hidden="true">${escapeHtml(task.glyph)}</span>`
@@ -196,7 +199,43 @@ function renderTaskRow(task: DashboardTaskRow, showTokens: boolean): string {
   }
 
   const title = task.summary ? ` title="${escapeHtml(task.summary)}"` : ""
-  return `<tr${title}>${cells.join("")}</tr>`
+  const row = `<tr${title}>${cells.join("")}</tr>`
+  if (!task.isRunning) return row
+
+  // Bajo cada tarea en curso se listan sus últimas acciones reales.
+  return `${row}\n<tr class="activity-row"><td colspan="${colspan}">${renderActivityList(
+    task.activity ?? [],
+    "sin actividad registrada",
+  )}</td></tr>`
+}
+
+/** Lista de acciones (tool + resumen + "hace Xs"). */
+function renderActivityList(items: readonly DashboardActivityRow[], emptyText: string): string {
+  if (items.length === 0) {
+    return `<p class="act-empty">${escapeHtml(emptyText)}</p>`
+  }
+  const entries = items.map((item) =>
+    [
+      '<li class="act-item">',
+      `<span class="mono act-tool">${escapeHtml(item.tool)}</span>`,
+      item.summary ? `<span class="act-summary">${escapeHtml(item.summary)}</span>` : "",
+      `<span class="dim act-ago">${escapeHtml(item.ago)}</span>`,
+      "</li>",
+    ].join(" "),
+  )
+  return `<ul class="acts">${entries.join("")}</ul>`
+}
+
+/** Sección plegable con la actividad de la sesión orquestadora. */
+function renderOrchestratorActivity(orchestrator: DashboardOrchestratorView): string {
+  return [
+    '<details class="orch-activity">',
+    `<summary>Actividad del ${escapeHtml(orchestrator.label)} (<span class="dim">${escapeHtml(
+      String(orchestrator.activity.length),
+    )}</span>)</summary>`,
+    renderActivityList(orchestrator.activity, "sin actividad registrada"),
+    "</details>",
+  ].join("")
 }
 
 function shortTime(iso: string): string {
@@ -229,7 +268,22 @@ export function renderClientScript(refreshMs: number = DASHBOARD_REFRESH_MS): st
     '    return \'<td class="status tone-\' + esc(task.tone) + \'">\' + icon +',
     '      \' <span class="status-text">\' + esc(task.statusText) + "</span></td>";',
     "  }",
-    "  function taskRow(task, showTokens) {",
+    "  function activityList(items, emptyText) {",
+    "    if (!items || items.length === 0) {",
+    '      return \'<p class="act-empty">\' + esc(emptyText) + "</p>";',
+    "    }",
+    "    var entries = items.map(function (item) {",
+    "      return [",
+    '        \'<li class="act-item">\',',
+    '        \'<span class="mono act-tool">\' + esc(item.tool) + "</span>",',
+    '        item.summary ? \'<span class="act-summary">\' + esc(item.summary) + "</span>" : "",',
+    '        \'<span class="dim act-ago">\' + esc(item.ago) + "</span>",',
+    '        "</li>"',
+    '      ].join(" ");',
+    "    });",
+    '    return \'<ul class="acts">\' + entries.join("") + "</ul>";',
+    "  }",
+    "  function taskRow(task, showTokens, colspan) {",
     "    var cells = [",
     '      \'<td class="mono">\' + esc(task.taskId) + "</td>",',
     '      "<td>" + esc(task.agent) + "</td>",',
@@ -242,7 +296,16 @@ export function renderClientScript(refreshMs: number = DASHBOARD_REFRESH_MS): st
     '      cells.push(\'<td class="num">\' + esc(extra) + "</td>");',
     "    }",
     '    var title = task.summary ? \' title="\' + esc(task.summary) + \'"\' : "";',
-    '    return "<tr" + title + ">" + cells.join("") + "</tr>";',
+    '    var row = "<tr" + title + ">" + cells.join("") + "</tr>";',
+    "    if (!task.isRunning) return row;",
+    '    return row + \'<tr class="activity-row"><td colspan="\' + colspan + \'">\' +',
+    '      activityList(task.activity || [], "sin actividad registrada") + "</td></tr>";',
+    "  }",
+    "  function orchestratorActivity(orchestrator) {",
+    "    if (!orchestrator) return \"\";",
+    '    return \'<details class="orch-activity"><summary>Actividad del \' + esc(orchestrator.label) +',
+    '      \' (<span class="dim">\' + esc((orchestrator.activity || []).length) + \'</span>)</summary>\' +',
+    '      activityList(orchestrator.activity || [], "sin actividad registrada") + "</details>";',
     "  }",
     "  function taskTable(run, showTokens) {",
     '    var headers = ["ID", "Agente", "Estado", "Rama", "Tiempo"];',
@@ -250,7 +313,7 @@ export function renderClientScript(refreshMs: number = DASHBOARD_REFRESH_MS): st
     "    var head = headers.map(function (header) {",
     '      return "<th>" + esc(header) + "</th>";',
     '    }).join("");',
-    "    var rows = run.tasks.map(function (task) { return taskRow(task, showTokens); });",
+    "    var rows = run.tasks.map(function (task) { return taskRow(task, showTokens, headers.length); });",
     '    if (rows.length === 0) {',
     '      rows.push(\'<tr><td class="empty" colspan="\' + headers.length + \'">Sin tareas con resultado todavía.</td></tr>\');',
     "    }",
@@ -277,7 +340,8 @@ export function renderClientScript(refreshMs: number = DASHBOARD_REFRESH_MS): st
     '      \'</span> · <span class="dim">duración \' + esc(run.duration) + "</span>";',
     "  }",
     "  function runBody(run, showTokens) {",
-    '    return progress(run) + (run.error ? \'<p class="run-error">\' + esc(run.error) + "</p>" : "") + taskTable(run, showTokens);',
+    '    return progress(run) + (run.error ? \'<p class="run-error">\' + esc(run.error) + "</p>" : "") +',
+    "      orchestratorActivity(run.orchestrator) + taskTable(run, showTokens);",
     "  }",
     "  function activeCard(run, showTokens) {",
     '    return \'<article class="run-card active tone-\' + esc(run.tone) + \'"><h3 class="run-title">\' + title(run) +',
@@ -416,6 +480,17 @@ main { max-width: 1080px; margin: 0 auto; padding: 0.75rem 1.25rem 2rem; display
 .tasks .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tasks .status { white-space: nowrap; }
 .empty { color: var(--dim); font-size: 0.88rem; padding: 0.4rem 0; }
+.activity-row td { padding: 0 0.6rem 0.55rem; border-bottom: 1px solid rgba(38, 49, 64, 0.55); background: rgba(88, 166, 255, 0.03); }
+.acts { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.18rem; font-size: 0.8rem; }
+.act-item { display: flex; gap: 0.5rem; align-items: baseline; min-width: 0; }
+.act-tool { color: var(--accent); white-space: nowrap; }
+.act-summary { color: var(--fg); overflow-wrap: anywhere; }
+.act-ago { white-space: nowrap; }
+.act-empty { margin: 0; padding: 0.05rem 0; color: var(--dim); font-size: 0.78rem; font-style: italic; }
+.orch-activity { margin: 0.1rem 0 0.7rem; font-size: 0.82rem; }
+.orch-activity > summary { cursor: pointer; color: var(--dim); font-size: 0.78rem; }
+.orch-activity > summary::marker { color: var(--dim); }
+.orch-activity[open] > summary { margin-bottom: 0.35rem; }
 .history summary { cursor: pointer; font-size: 0.9rem; color: var(--dim); font-weight: 600; }
 .history summary::marker { color: var(--dim); }
 .history[open] summary { margin-bottom: 0.9rem; }

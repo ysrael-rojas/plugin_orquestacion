@@ -9,10 +9,13 @@
  *   instancia viva se cede (con aviso); si es un proceso huérfano se reintenta
  *   una vez.
  * - Todo el arranque es best-effort: el dashboard jamás rompe una orquestación.
+ * - `/api/state` (contrato v2) añade la actividad en vivo por tarea en vuelo y
+ *   la del orquestador, leída del feed en RAM (`src/activity.ts`).
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 
+import { getActivityFeed } from "./activity"
 import { renderDashboardHtml } from "./dashboard-html"
 import {
   buildDashboardView,
@@ -248,10 +251,22 @@ async function handleRequest(
 async function readState(ctx: PluginCtx): Promise<DashboardState> {
   try {
     const runs = await recentRuns(ctx, 20)
-    return buildDashboardView(runs)
+    return buildDashboardView(runs, new Date(), activitySource())
   } catch (error) {
     console.warn(`[plugin-orquestacion] dashboard: no se pudo leer el estado (${describeError(error)}).`)
-    return buildDashboardView([])
+    return buildDashboardView([], new Date(), activitySource())
+  }
+}
+
+/**
+ * Fuente de actividad para el view-model: el feed en RAM del proceso. Si no
+ * hay datos (sin eventos, sin sesiones registradas) devuelve listas vacías.
+ */
+function activitySource() {
+  const feed = getActivityFeed()
+  return {
+    task: (runId: string, taskId: string) => feed.activityForTask(runId, taskId),
+    orchestrator: (runId: string) => feed.orchestratorActivity(runId),
   }
 }
 
