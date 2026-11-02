@@ -6,6 +6,13 @@ import { detectEngram, formatEngramStatus } from "./engram"
 import { sanitizePlanDocsFolder } from "./plandocs"
 import { registerTools } from "./tools"
 import { registerSkills } from "./skills"
+import {
+  normalizeModelProfileName,
+  ORCHESTRATOR_AGENT_ID,
+  profileModel,
+  resolveModelProfiles,
+  splitModelRef,
+} from "./types"
 import type { PluginCtx, PluginOptions } from "./types"
 
 /**
@@ -60,6 +67,30 @@ export default Plugin.define({
 
     const workdir = ctx.location?.directory ?? process.cwd()
 
+    // Perfiles de modelos: built-in (`high`/`balanced`/`low`/`free`) fusionados
+    // con los del usuario. El default debe existir; si no, se ignora con aviso.
+    const modelProfiles = resolveModelProfiles((options as PluginOptions).modelProfiles)
+    const requestedProfile = normalizeModelProfileName((options as PluginOptions).modelProfile)
+    let defaultModelProfile: string | undefined
+    if (requestedProfile) {
+      if (modelProfiles[requestedProfile]) {
+        defaultModelProfile = requestedProfile
+      } else {
+        console.warn(
+          `[plugin-orquestacion] modelProfile "${requestedProfile}" no existe; se ignora. ` +
+            `Perfiles disponibles: ${Object.keys(modelProfiles).join(", ")}.`,
+        )
+      }
+    }
+
+    // Orquestador: el perfil por defecto fija su modelo vía `agent.transform`
+    // (best-effort, solo afecta sesiones nuevas). Un fallo aquí no rompe nada.
+    const orchestratorModel = profileModel(
+      defaultModelProfile ? modelProfiles[defaultModelProfile] : undefined,
+      ORCHESTRATOR_AGENT_ID,
+    )
+    const agentRegistration = await applyOrchestratorModel(ctx, orchestratorModel)
+
     // Dashboard local: best-effort. Un fallo aquí nunca debe romper el plugin.
     const dashboardPort = normalizeDashboardPort((options as PluginOptions).dashboardPort)
     if (dashboardPort.warning) console.warn(dashboardPort.warning)
@@ -86,6 +117,8 @@ export default Plugin.define({
       runHistory,
       planDocs,
       workdir,
+      modelProfiles,
+      ...(defaultModelProfile ? { defaultModelProfile } : {}),
       ...(dashboard ? { dashboard: { port: dashboard.port, url: dashboard.url } } : {}),
     })
 
@@ -156,9 +189,57 @@ export default Plugin.define({
       } catch {
         // sin acción: el plugin se está descargando
       }
+      try {
+        await agentRegistration?.dispose?.()
+      } catch {
+        // sin acción: el plugin se está descargando
+      }
     }
   },
 })
+
+/**
+ * Aplica el modelo del perfil al agente orquestador vía `ctx.agent.transform`.
+ *
+ * Best-effort: sin `transform` en el contexto (o con un editor sin el agente)
+ * devuelve `undefined` y el agente conserva el modelo de `opencode.json`. El
+ * cambio solo alcanza sesiones creadas después del setup.
+ */
+async function applyOrchestratorModel(
+  ctx: PluginCtx,
+  model: string | undefined,
+): Promise<{ dispose?: () => Promise<void> } | undefined> {
+  if (!model) return undefined
+
+  const ref = splitModelRef(model)
+  if (!ref) {
+    console.warn(
+      `[plugin-orquestacion] el perfil declara un modelo inválido para ${ORCHESTRATOR_AGENT_ID}: "${model}" (formato providerID/modelID).`,
+    )
+    return undefined
+  }
+
+  const transform = ctx.agent?.transform
+  if (typeof transform !== "function") return undefined
+
+  try {
+    return await transform.call(ctx.agent, (editor: any) => {
+      if (typeof editor?.list !== "function" || typeof editor?.update !== "function") return
+      const exists = (editor.list() as any[]).some((agent) => agent?.id === ORCHESTRATOR_AGENT_ID)
+      if (!exists) return
+      editor.update(ORCHESTRATOR_AGENT_ID, (agent: any) => {
+        agent.model = { ...ref }
+      })
+    })
+  } catch (error) {
+    console.warn(
+      `[plugin-orquestacion] no se pudo aplicar el perfil al orquestador: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    )
+    return undefined
+  }
+}
 
 async function warnMissingAgents(ctx: PluginCtx): Promise<void> {
   try {
