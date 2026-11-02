@@ -1,10 +1,19 @@
 import { AGENTS } from "./agents"
 import { formatTimeAgo, getActivityFeed, type ActivityEventCtx } from "./activity"
+import { DEFAULT_QA_LEVEL, isQaLevel, normalizeQaLevels, resolveQaLevel } from "./contracts"
 import { detectEngram, formatEngramStatus } from "./engram"
 import { getRun, pruneRuns, recentRuns, saveRun } from "./history"
 import { planDocsRelativePath, statusIcon, writePlanDocs } from "./plandocs"
 import { runOrchestration, validateTasks } from "./runner"
-import type { OrchestrateInput, PlanDocsState, PluginCtx, RunControl, RunRecord, TaskResult } from "./types"
+import type {
+  OrchestrateInput,
+  PlanDocsState,
+  PluginCtx,
+  RunControl,
+  RunRecord,
+  TaskResult,
+  TaskSpec,
+} from "./types"
 
 /** Runs activos en esta instancia del plugin (para aiapaec_run_abort). */
 const activeRuns = new Map<string, RunControl>()
@@ -73,6 +82,16 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
                 branch: {
                   type: "string",
                   description: "Rama de trabajo. Por defecto feat/<id>.",
+                },
+                qaLevel: {
+                  type: "string",
+                  enum: ["L1", "L2", "L3"],
+                  description:
+                    "Nivel de exigencia de la validación (por defecto L2). " +
+                    "L1 = smoke (solo pnpm test con evidencia del comando); " +
+                    "L2 = estándar (validación contra el spec del contrato con evidencia); " +
+                    "L3 = forense (L2 + supuestos técnicos verificados contra fuentes reales, p. ej. los .d.ts del SDK). " +
+                    "Un valor inválido cae a L2 con aviso.",
                 },
                 scope: {
                   type: "object",
@@ -163,6 +182,12 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           cleanupWorktrees?: boolean
         }
 
+        // qaLevel se normaliza antes de validar: el declarado manda, ausente es
+        // L2 y un valor inválido cae a L2 con aviso (no aborta el plan).
+        const normalizedQa = normalizeQaLevels(payload.tasks ?? [])
+        const tasks = normalizedQa.tasks
+        const qaLevelWarnings = normalizedQa.warnings
+
         const knownAgents = await listAgentIds(ctx)
         if (!knownAgents) {
           return {
@@ -173,7 +198,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
         }
 
         const missing = Array.from(
-          new Set(payload.tasks.map((task) => task.agent).filter((agent) => !knownAgents.has(agent))),
+          new Set(tasks.map((task) => task.agent).filter((agent) => !knownAgents.has(agent))),
         )
 
         if (missing.length > 0) {
@@ -183,7 +208,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           }
         }
 
-        const taskErrors = validateTasks(payload.tasks)
+        const taskErrors = validateTasks(tasks)
         if (taskErrors.length > 0) {
           return {
             content: `❌ El plan tiene errores:\n\n${taskErrors.map((error) => `- ${error}`).join("\n")}`,
@@ -194,7 +219,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
         const keepSessions = payload.keepSessions ?? !settings.cleanupSessions
         const projectID = ctx.location.project?.id
 
-        if (payload.tasks.some((task) => task.worktree === true) && !projectID) {
+        if (tasks.some((task) => task.worktree === true) && !projectID) {
           return {
             content:
               "❌ Hay tareas con `worktree: true`, pero esta ubicación no expone projectID; no se puede crear el worktree.",
@@ -241,7 +266,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           baseBranch: settings.baseBranch,
           startedAt,
           status: "running",
-          totalTasks: payload.tasks.length,
+          totalTasks: tasks.length,
           inFlight: [],
           results: [],
         }
@@ -268,7 +293,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             startedAt,
             status: "running",
             contextSummary: payload.context?.summary,
-            tasks: payload.tasks.map((task) => ({
+            tasks: tasks.map((task) => ({
               id: task.id,
               agent: task.agent,
               objective: task.objective,
@@ -294,7 +319,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
 
         const execution = runOrchestration({
           ctx,
-          input: payload,
+          input: { ...payload, tasks },
           baseBranch: settings.baseBranch,
           workdir: settings.workdir,
           runId,
@@ -306,14 +331,15 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           taskTimeoutMs: settings.taskTimeoutMs,
           control,
           onUpdate: async ({ results }) => {
-            latestResults = [...results]
-            const finished = new Set(results.map((entry) => entry.taskId))
+            const decorated = withQaLevels(results, tasks)
+            latestResults = decorated
+            const finished = new Set(decorated.map((entry) => entry.taskId))
             const pending = inFlight.filter((id) => !finished.has(id))
-            for (const entry of results) {
+            for (const entry of decorated) {
               if (entry.sessionID) feed.unregister(entry.sessionID)
             }
             if (control.planDocs) {
-              control.planDocs.results = [...results]
+              control.planDocs.results = decorated
               control.planDocs.inFlight = pending
               try {
                 await writePlanDocs(control.planDocs)
@@ -324,7 +350,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             try {
               await saveRun(ctx, {
                 ...base,
-                results: [...results],
+                results: decorated,
                 inFlight: pending,
                 planDocWarnings: control.planDocWarnings,
               })
@@ -358,15 +384,16 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           .then(async (result): Promise<RunRecord> => {
             activeRuns.delete(runId)
             feed.unregisterRun(runId)
+            const finalResults = withQaLevels(result.results, tasks)
             const record: RunRecord = {
               ...base,
               finishedAt: result.finishedAt,
               status: control.aborted ? "aborted" : "completed",
-              results: result.results,
+              results: finalResults,
               planDocWarnings: control.planDocWarnings,
             }
             if (control.planDocs) {
-              control.planDocs.results = result.results
+              control.planDocs.results = finalResults
               control.planDocs.inFlight = []
               control.planDocs.status = record.status
               control.planDocs.finishedAt = record.finishedAt
@@ -420,11 +447,14 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
         const written = [
           `## ▶️ Orquestación iniciada — ${payload.objective}`,
           "",
-          `**runId:** \`${runId}\` · **Tareas:** ${payload.tasks.length} · **Base:** \`${settings.baseBranch}\``,
+          `**runId:** \`${runId}\` · **Tareas:** ${tasks.length} · **Base:** \`${settings.baseBranch}\``,
           "",
           "El trabajo corre en segundo plano: las sesiones hijas siguen aunque esta llamada se interrumpa.",
           `Consulta el avance con \`aiapaec_run_status\` usando \`runId: "${runId}"\`. No relances el run sin verificar su estado.`,
         ]
+        if (qaLevelWarnings.length > 0) {
+          written.push("", "## ⚠️ Avisos de `qaLevel`", "", ...qaLevelWarnings.map((warning) => `- ${warning}`))
+        }
         const dashboard = dashboardLine(settings)
         if (dashboard) written.push("", dashboard)
 
@@ -434,7 +464,8 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             ok: true,
             runId,
             status: "running",
-            totalTasks: payload.tasks.length,
+            totalTasks: tasks.length,
+            ...(qaLevelWarnings.length > 0 ? { qaLevelWarnings } : {}),
             ...(settings.dashboard ? { dashboard: settings.dashboard.url } : {}),
           },
         }
@@ -696,6 +727,22 @@ function lastActionResolver(record: RunRecord) {
   }
 }
 
+/**
+ * Adjunta a cada resultado el `qaLevel` efectivo de su tarea (declarado o
+ * default L2). El runner no lo resuelve: es responsabilidad de la tool, que es
+ * quien conoce el `TaskSpec` original y persiste el `RunRecord` que leen
+ * `aiapaec_run_status` y el dashboard.
+ */
+function withQaLevels(results: readonly TaskResult[], tasks: readonly TaskSpec[]): TaskResult[] {
+  const levels = new Map(tasks.map((task) => [task.id, resolveQaLevel(task)]))
+  return results.map((result) => ({
+    ...result,
+    qaLevel: isQaLevel(result.qaLevel)
+      ? result.qaLevel
+      : (levels.get(result.taskId) ?? DEFAULT_QA_LEVEL),
+  }))
+}
+
 function normalizeRunId(raw?: string): string | undefined {
   if (typeof raw !== "string") return undefined
   const cleaned = raw
@@ -741,8 +788,9 @@ function formatRunRecord(
     lines.push("", "| Tarea | Agente | Estado | Tiempo | Rama |", "|---|---|---|---|---|")
     for (const result of record.results) {
       const time = result.latencyMs ? `${(result.latencyMs / 1000).toFixed(1)}s` : "—"
+      const agent = result.qaLevel ? `${result.agent} · ${result.qaLevel}` : result.agent
       lines.push(
-        `| ${escapeCell(result.taskId)} | ${escapeCell(result.agent)} | ${statusIcon(result.status)} ${result.status} | ${time} | ${escapeCell(result.branch ?? "—")} |`,
+        `| ${escapeCell(result.taskId)} | ${escapeCell(agent)} | ${statusIcon(result.status)} ${result.status} | ${time} | ${escapeCell(result.branch ?? "—")} |`,
       )
     }
 

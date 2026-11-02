@@ -5,7 +5,15 @@ import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
 
-import { buildTaskPrompt, extractReport } from "../src/contracts"
+import {
+  buildTaskPrompt,
+  DEFAULT_QA_LEVEL,
+  extractReport,
+  normalizeQaLevels,
+  QA_LEVELS,
+  QA_LEVEL_GUIDE,
+  resolveQaLevel,
+} from "../src/contracts"
 import {
   ACTIVITY_BUFFER_SIZE,
   ACTIVITY_SUMMARY_MAX,
@@ -222,6 +230,62 @@ test("contratos: prompt con rama base y parseo tolerante del reporte", () => {
   assert.deepEqual(fenced, { task_id: "T", summary: "s" })
   assert.equal(extractReport('{"a":1}'), undefined, "un JSON sin forma de reporte se descarta")
   assert.equal(extractReport("sin json"), undefined)
+})
+
+test("qaLevel: default L2, valores válidos y caída a L2 con aviso", () => {
+  assert.deepEqual(QA_LEVELS, ["L1", "L2", "L3"])
+  assert.equal(DEFAULT_QA_LEVEL, "L2")
+  assert.equal(resolveQaLevel({}), "L2")
+  assert.equal(resolveQaLevel({ qaLevel: "L3" }), "L3")
+  assert.equal(resolveQaLevel({ qaLevel: "l3" as any }), "L2", "un nivel inválido resuelve a L2")
+
+  const normalized = normalizeQaLevels([
+    { id: "Q1", agent: "qa", objective: "smoke", qaLevel: "L1" },
+    { id: "Q2", agent: "qa", objective: "sin nivel" },
+    { id: "Q3", agent: "qa", objective: "nivel roto", qaLevel: "L9" as any },
+  ])
+
+  assert.equal(normalized.tasks[0]!.qaLevel, "L1")
+  assert.equal(normalized.tasks[1]!.qaLevel, undefined, "sin declarar queda en default L2 aguas abajo")
+  assert.equal(normalized.tasks[2]!.qaLevel, "L2", "el inválido cae a L2")
+  assert.equal(normalized.warnings.length, 1)
+  assert.match(normalized.warnings[0]!, /Q3/)
+  assert.match(normalized.warnings[0]!, /L9/)
+  assert.match(normalized.warnings[0]!, /L1, L2, L3/)
+})
+
+test("contratos: el prompt de qa incluye la definición operativa del nivel", () => {
+  const base = { baseBranch: "dev", runObjective: "validar el cambio" }
+
+  const l1 = buildTaskPrompt({
+    ...base,
+    task: { id: "QA1", agent: "qa", objective: "smoke", qaLevel: "L1" },
+  })
+  assert.match(l1, /## Nivel de QA — L1/)
+  assert.ok(l1.includes(QA_LEVEL_GUIDE.L1))
+  assert.ok(!l1.includes(QA_LEVEL_GUIDE.L2), "solo la definición del nivel efectivo")
+  assert.match(l1, /"qa_level": "L1"/, "el contrato de entrada declara el nivel")
+
+  const l3 = buildTaskPrompt({
+    ...base,
+    task: { id: "QA3", agent: "qa", objective: "forense", qaLevel: "L3" },
+  })
+  assert.match(l3, /## Nivel de QA — L3/)
+  assert.ok(l3.includes(QA_LEVEL_GUIDE.L3))
+  assert.ok(l3.includes(".d.ts"), "L3 exige contrastar supuestos contra fuentes reales")
+
+  const byDefault = buildTaskPrompt({
+    ...base,
+    task: { id: "QA2", agent: "qa", objective: "sin nivel" },
+  })
+  assert.match(byDefault, /## Nivel de QA — L2/, "sin qaLevel el nivel efectivo es L2")
+  assert.ok(byDefault.includes(QA_LEVEL_GUIDE.L2))
+
+  const coder = buildTaskPrompt({
+    ...base,
+    task: { id: "C1", agent: "coder", objective: "implementar" },
+  })
+  assert.ok(!coder.includes("## Nivel de QA"), "el nivel solo se inyecta en tareas de qa")
 })
 
 test("detección de Engram: conectado, no disponible y ausente", async () => {
@@ -1318,6 +1382,26 @@ test("dashboard: la columna tokens/costo solo aparece si hay datos", () => {
   assert.ok(conTokens.includes("<th>Tokens / costo</th>"), "con datos sí se muestra la columna")
 })
 
+test("dashboard: el nivel de QA se expone en la vista y como badge discreto", () => {
+  const runs = dashboardRuns()
+  runs[0]!.results[0]!.qaLevel = "L1"
+  runs[0]!.results[1]!.qaLevel = "L3"
+
+  const view = buildDashboardView(runs, new Date("2024-01-01T00:00:10.000Z"))
+  assert.equal(view.active!.tasks[0]!.qaLevel, "L1")
+  assert.equal(view.active!.tasks[1]!.qaLevel, "L3")
+  assert.equal(view.active!.tasks[2]!.qaLevel, undefined, "la tarea en vuelo aún no conoce su nivel")
+
+  const html = renderDashboardHtml(view)
+  assert.match(html, /<span class="qa-badge">L1<\/span>/)
+  assert.match(html, /<span class="qa-badge">L3<\/span>/)
+  assert.match(html, /\.qa-badge \{/, "el badge tiene estilo propio (sin colores nuevos)")
+
+  const script = html.slice(html.indexOf("<script>") + "<script>".length, html.lastIndexOf("</script>"))
+  assert.ok(script.includes("qa-badge"), "el refresco del cliente repinta el badge")
+  assert.doesNotThrow(() => new Function(script), "el JS embebido sigue siendo válido")
+})
+
 test("dashboard: escapeHtml neutraliza HTML y comillas", () => {
   assert.equal(
     escapeHtml('<b class="x">Tom & "Jerry"</b>'),
@@ -1692,7 +1776,7 @@ test("dashboard v2: cada tarea en curso lleva activity y las cerradas no", () =>
   const now = new Date("2024-01-01T00:00:10.000Z")
   const view = buildDashboardView(dashboardRuns(), now, activitySource(now))
 
-  assert.equal(view.version, 2, "el contrato de /api/state sube a v2")
+  assert.equal(view.version, 3, "el contrato de /api/state sube a v3 (qaLevel por tarea)")
   const running = view.active!.tasks.find((task) => task.taskId === "T3")!
   assert.equal(running.activity!.length, 1)
   assert.deepEqual({ ...running.activity![0] }, {
@@ -1774,7 +1858,7 @@ test("dashboard v2: /api/state expone activity por tarea y la sesión orquestado
   assert.ok(handle, "el dashboard debe arrancar")
   try {
     const state: any = await (await fetch(`${handle!.url}/api/state`)).json()
-    assert.equal(state.version, 2)
+    assert.equal(state.version, 3)
     assert.equal(state.active.runId, "RUN-ACT-API")
     assert.equal(state.active.tasks[0].activity.length, 1)
     assert.equal(state.active.tasks[0].activity[0].tool, "read")
@@ -1826,6 +1910,44 @@ test("tools: run_status añade la última acción de cada tarea en curso", async
   } finally {
     feed.reset()
   }
+})
+
+test("tools: qaLevel viaja al resultado, run_status lo muestra y el inválido cae a L2", async () => {
+  const { ctx, tools } = makeToolCtx()
+  await registerTools(ctx, TOOL_SETTINGS)
+  const orchestrate = tools.get("orchestrate")!
+  const runStatus = tools.get("run_status")!
+
+  const started = await orchestrate.execute(
+    {
+      objective: "niveles de qa",
+      runId: "RUN-QA-LEVEL",
+      tasks: [
+        { id: "Q1", agent: "qa", objective: "smoke", qaLevel: "L1" },
+        { id: "Q2", agent: "qa", objective: "sin nivel" },
+        { id: "Q3", agent: "qa", objective: "nivel roto", qaLevel: "L9" },
+      ],
+    },
+    { sessionID: "ses_orq" },
+  )
+
+  assert.equal(started.metadata.ok, true)
+  assert.match(String(started.content), /Avisos de `qaLevel`/, "el valor inválido se avisa en la respuesta")
+  assert.equal(started.metadata.qaLevelWarnings.length, 1)
+
+  const record = await waitForRun(ctx, "RUN-QA-LEVEL")
+  const byId = new Map(record.results.map((entry) => [entry.taskId, entry]))
+  assert.equal(byId.get("Q1")!.qaLevel, "L1")
+  assert.equal(byId.get("Q2")!.qaLevel, "L2", "sin qaLevel el resultado queda en L2")
+  assert.equal(byId.get("Q3")!.qaLevel, "L2", "el inválido cae a L2")
+
+  const status = await runStatus.execute({ runId: "RUN-QA-LEVEL" })
+  assert.match(String(status.content), /qa · L1/, "run_status muestra el nivel junto al agente")
+  assert.match(String(status.content), /qa · L2/)
+
+  const prompts = (ctx as any).__prompts as Array<{ taskId: string; text: string }>
+  assert.match(prompts.find((entry) => entry.taskId === "Q1")!.text, /## Nivel de QA — L1/)
+  assert.match(prompts.find((entry) => entry.taskId === "Q2")!.text, /## Nivel de QA — L2/)
 })
 
 test("tools: orchestrate registra la sesión orquestadora y cada hija en el feed", async () => {
