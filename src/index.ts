@@ -1,6 +1,7 @@
 import { Plugin } from "@opencode/plugin"
 
 import { AGENTS } from "./agents"
+import { normalizeDashboardPort, startDashboard, type DashboardHandle } from "./dashboard"
 import { detectEngram, formatEngramStatus } from "./engram"
 import { sanitizePlanDocsFolder } from "./plandocs"
 import { registerTools } from "./tools"
@@ -59,6 +60,23 @@ export default Plugin.define({
 
     const workdir = ctx.location?.directory ?? process.cwd()
 
+    // Dashboard local: best-effort. Un fallo aquí nunca debe romper el plugin.
+    const dashboardPort = normalizeDashboardPort((options as PluginOptions).dashboardPort)
+    if (dashboardPort.warning) console.warn(dashboardPort.warning)
+
+    let dashboard: DashboardHandle | undefined
+    if (dashboardPort.port > 0) {
+      try {
+        dashboard = await startDashboard(ctx, dashboardPort.port)
+      } catch (error) {
+        console.warn(
+          `[plugin-orquestacion] dashboard desactivado: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        )
+      }
+    }
+
     const tools = await registerTools(ctx, {
       baseBranch,
       cleanupSessions,
@@ -68,6 +86,7 @@ export default Plugin.define({
       runHistory,
       planDocs,
       workdir,
+      ...(dashboard ? { dashboard: { port: dashboard.port, url: dashboard.url } } : {}),
     })
 
     const commands = await ctx.command.transform((editor: any) => {
@@ -117,6 +136,11 @@ export default Plugin.define({
     }
 
     return async () => {
+      try {
+        await dashboard?.close()
+      } catch {
+        // sin acción: el plugin se está descargando
+      }
       try {
         await tools?.dispose?.()
       } catch {

@@ -18,6 +18,8 @@ export interface ToolSettings {
   /** Carpeta relativa destino del plan; `false` desactiva el documento. */
   planDocs: string | false
   workdir: string
+  /** Dashboard local activo en esta instancia (si se pudo arrancar). */
+  dashboard?: { port: number; url: string }
 }
 
 export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
@@ -395,16 +397,26 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
         // interrumpe, el trabajo continúa y el estado queda en el storage.
         void execution
 
+        const written = [
+          `## ▶️ Orquestación iniciada — ${payload.objective}`,
+          "",
+          `**runId:** \`${runId}\` · **Tareas:** ${payload.tasks.length} · **Base:** \`${settings.baseBranch}\``,
+          "",
+          "El trabajo corre en segundo plano: las sesiones hijas siguen aunque esta llamada se interrumpa.",
+          `Consulta el avance con \`aiapaec_run_status\` usando \`runId: "${runId}"\`. No relances el run sin verificar su estado.`,
+        ]
+        const dashboard = dashboardLine(settings)
+        if (dashboard) written.push("", dashboard)
+
         return {
-          content: [
-            `## ▶️ Orquestación iniciada — ${payload.objective}`,
-            "",
-            `**runId:** \`${runId}\` · **Tareas:** ${payload.tasks.length} · **Base:** \`${settings.baseBranch}\``,
-            "",
-            "El trabajo corre en segundo plano: las sesiones hijas siguen aunque esta llamada se interrumpa.",
-            `Consulta el avance con \`aiapaec_run_status\` usando \`runId: "${runId}"\`. No relances el run sin verificar su estado.`,
-          ].join("\n"),
-          metadata: { ok: true, runId, status: "running", totalTasks: payload.tasks.length },
+          content: written.join("\n"),
+          metadata: {
+            ok: true,
+            runId,
+            status: "running",
+            totalTasks: payload.tasks.length,
+            ...(settings.dashboard ? { dashboard: settings.dashboard.url } : {}),
+          },
         }
       },
     })
@@ -445,6 +457,8 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
                 : ""
             const contentParts = [formatRunRecord(record)]
             if (planLine) contentParts.push("", planLine)
+            const dashboard = dashboardLine(settings)
+            if (dashboard) contentParts.push("", dashboard)
             if (orphan) {
               contentParts.push(
                 "",
@@ -469,6 +483,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
                 done: record.results.length,
                 totalTasks: record.totalTasks,
                 results: record.results,
+                ...(settings.dashboard ? { dashboard: settings.dashboard.url } : {}),
               },
             }
           }
@@ -478,7 +493,18 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             return { content: "No hay orquestaciones registradas todavía.", metadata: { ok: true, runs: 0 } }
           }
 
-          return { content: formatRunsList(runs), metadata: { ok: true, runs: runs.length } }
+          const dashboard = dashboardLine(settings)
+          const list = [formatRunsList(runs)]
+          if (dashboard) list.push("", dashboard)
+
+          return {
+            content: list.join("\n"),
+            metadata: {
+              ok: true,
+              runs: runs.length,
+              ...(settings.dashboard ? { dashboard: settings.dashboard.url } : {}),
+            },
+          }
         } catch (error) {
           return {
             content: `❌ No se pudo leer el estado de los runs: ${
@@ -626,6 +652,11 @@ function addPlanDocWarning(control: RunControl, runId: string, error: unknown): 
   const message = `[planDocs] No se pudo actualizar ${runId}: ${error instanceof Error ? error.message : String(error)}`
   if (!control.planDocWarnings) control.planDocWarnings = []
   control.planDocWarnings.push(message)
+}
+
+/** Línea con la URL del dashboard local, si está activo en esta instancia. */
+function dashboardLine(settings: ToolSettings): string | undefined {
+  return settings.dashboard ? `Dashboard: ${settings.dashboard.url}` : undefined
 }
 
 function normalizeRunId(raw?: string): string | undefined {
