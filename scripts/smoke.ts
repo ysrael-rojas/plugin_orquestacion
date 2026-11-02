@@ -931,7 +931,7 @@ test("tools: runHistory se conecta de extremo a extremo", async () => {
   assert.equal(runs[1]!.runId, "RUN-E2E-1")
 })
 
-test("skills: registra grilling y grill-me desde .agents/skills/", async () => {
+test("skills: registra las 9 skills del catálogo .agents/skills/", async () => {
   const ctx = makeCtx()
   const added: any[] = []
   ;(ctx as any).skill = {
@@ -945,7 +945,17 @@ test("skills: registra grilling y grill-me desde .agents/skills/", async () => {
   await registerSkills(ctx, { workdir: process.cwd() })
 
   const ids = added.map((skill) => skill.id).sort()
-  assert.deepEqual(ids, ["grill-me", "grilling"])
+  assert.deepEqual(ids, [
+    "code-review",
+    "codebase-design",
+    "diagnosing-bugs",
+    "domain-modeling",
+    "grill-me",
+    "grill-with-docs",
+    "grilling",
+    "research",
+    "tdd",
+  ])
 
   const grilling = added.find((skill) => skill.id === "grilling")
   const grillMe = added.find((skill) => skill.id === "grill-me")
@@ -967,6 +977,33 @@ test("skills: registra grilling y grill-me desde .agents/skills/", async () => {
     }
   }
   assert.equal(grillMe.path, path.join(process.cwd(), ".agents", "skills", "grill-me", "SKILL.md"))
+
+  const grillWithDocs = added.find((skill) => skill.id === "grill-with-docs")!
+  assert.equal(grillWithDocs.autoinvoke, false, "grill-with-docs declara disable-model-invocation:true")
+  assert.equal(
+    added.filter((skill) => skill.autoinvoke === false).length,
+    2,
+    "solo grill-me y grill-with-docs están restringidas a invocación explícita",
+  )
+  assert.ok(
+    added.every((skill) => typeof skill.content === "string" && skill.content.length > 0),
+    "toda skill debe llevar el cuerpo markdown del SKILL.md",
+  )
+
+  // Vendor de mattpocock/skills: los documentos de soporte viajan en el mismo
+  // directorio porque el cuerpo del SKILL.md los referencia con ruta relativa.
+  for (const supportFile of ["SKILL.md", "mocking.md", "tests.md", "agents/openai.yaml"]) {
+    assert.equal(
+      fs.existsSync(path.join(process.cwd(), ".agents", "skills", "tdd", supportFile)),
+      true,
+      `tdd debe conservar ${supportFile}`,
+    )
+  }
+
+  const notices = fs.readFileSync(path.join(process.cwd(), ".agents", "skills", "THIRD-PARTY-NOTICES.md"), "utf8")
+  assert.match(notices, /MIT License/)
+  assert.match(notices, /Copyright \(c\) 2026 Matt Pocock/)
+  assert.match(notices, /4ae2317ddb22b046e26455e4f9c9b3aaaf62212d/, "el aviso debe fijar el commit vendorizado")
 })
 
 test("skills: option skills:false no registra nada", async () => {
