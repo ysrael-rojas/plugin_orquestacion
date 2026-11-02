@@ -1,4 +1,5 @@
 import { AGENTS } from "./agents"
+import { formatTimeAgo, getActivityFeed, type ActivityEventCtx } from "./activity"
 import { detectEngram, formatEngramStatus } from "./engram"
 import { getRun, pruneRuns, recentRuns, saveRun } from "./history"
 import { planDocsRelativePath, statusIcon, writePlanDocs } from "./plandocs"
@@ -23,6 +24,10 @@ export interface ToolSettings {
 }
 
 export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
+  // Feed de actividad: suscripción best-effort a los eventos V2. Si el runtime
+  // no expone `ctx.event`, el feed queda vacío y nada se rompe.
+  getActivityFeed().ensureSubscribed(ctx as unknown as ActivityEventCtx)
+
   return ctx.tool.transform((editor: any) => {
     editor.namespace({
       name: "aiapaec",
@@ -218,6 +223,15 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
         const control: RunControl = { aborted: false, sessions: new Set(), planDocWarnings: [] }
         activeRuns.set(runId, control)
 
+        // Feed de actividad: la sesión orquestadora se observa desde ya y cada
+        // hija se registra al crearse (onTaskStart). Todo best-effort.
+        const feed = getActivityFeed()
+        feed.ensureSubscribed(ctx as unknown as ActivityEventCtx)
+        const parentSessionID = typeof context?.sessionID === "string" ? context.sessionID : undefined
+        if (parentSessionID) {
+          feed.register(parentSessionID, "orquestador", { runId, role: "orchestrator" })
+        }
+
         const inFlight: string[] = []
         let latestResults: readonly TaskResult[] = []
 
@@ -285,7 +299,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           workdir: settings.workdir,
           runId,
           keepSessions,
-          parentSessionID: typeof context?.sessionID === "string" ? context.sessionID : undefined,
+          parentSessionID,
           projectID,
           worktreeParent: settings.worktreeParent,
           cleanupWorktrees: payload.cleanupWorktrees ?? settings.cleanupWorktrees,
@@ -295,6 +309,9 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             latestResults = [...results]
             const finished = new Set(results.map((entry) => entry.taskId))
             const pending = inFlight.filter((id) => !finished.has(id))
+            for (const entry of results) {
+              if (entry.sessionID) feed.unregister(entry.sessionID)
+            }
             if (control.planDocs) {
               control.planDocs.results = [...results]
               control.planDocs.inFlight = pending
@@ -315,8 +332,9 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
               // best-effort
             }
           },
-          onTaskStart: async ({ taskId }) => {
+          onTaskStart: async ({ taskId, sessionID }) => {
             if (!inFlight.includes(taskId)) inFlight.push(taskId)
+            if (sessionID) feed.register(sessionID, taskId, { runId, taskId, role: "task" })
             if (control.planDocs) {
               control.planDocs.inFlight = [...inFlight]
               try {
@@ -339,6 +357,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
         })
           .then(async (result): Promise<RunRecord> => {
             activeRuns.delete(runId)
+            feed.unregisterRun(runId)
             const record: RunRecord = {
               ...base,
               finishedAt: result.finishedAt,
@@ -367,6 +386,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           })
           .catch(async (error): Promise<RunRecord> => {
             activeRuns.delete(runId)
+            feed.unregisterRun(runId)
             const record: RunRecord = {
               ...base,
               finishedAt: new Date().toISOString(),
@@ -455,7 +475,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
               settings.planDocs !== false
                 ? `**Plan:** ${planDocsRelativePath({ folder: settings.planDocs, runId: record.runId })}`
                 : ""
-            const contentParts = [formatRunRecord(record)]
+            const contentParts = [formatRunRecord(record, { lastAction: lastActionResolver(record) })]
             if (planLine) contentParts.push("", planLine)
             const dashboard = dashboardLine(settings)
             if (dashboard) contentParts.push("", dashboard)
@@ -659,6 +679,23 @@ function dashboardLine(settings: ToolSettings): string | undefined {
   return settings.dashboard ? `Dashboard: ${settings.dashboard.url}` : undefined
 }
 
+/**
+ * Resolver de "última acción" por tarea para `run_status`: lee el feed en RAM
+ * (best-effort; si no hay datos la línea se omite).
+ */
+function lastActionResolver(record: RunRecord) {
+  const feed = getActivityFeed()
+  const now = new Date()
+  return (taskId: string) => {
+    try {
+      const item = feed.lastForTask(record.runId, taskId)
+      return item ? { tool: item.tool, summary: item.summary, ago: formatTimeAgo(item.at, now) } : undefined
+    } catch {
+      return undefined
+    }
+  }
+}
+
 function normalizeRunId(raw?: string): string | undefined {
   if (typeof raw !== "string") return undefined
   const cleaned = raw
@@ -674,7 +711,12 @@ function escapeCell(value: string): string {
   return value.replace(/\|/g, "\\|").replace(/\r?\n/g, " ")
 }
 
-function formatRunRecord(record: RunRecord): string {
+function formatRunRecord(
+  record: RunRecord,
+  options: {
+    lastAction?: (taskId: string) => { tool: string; summary: string; ago: string } | undefined
+  } = {},
+): string {
   const done = record.results.length
   const ok = record.results.filter((result) => result.status === "succeeded").length
   const failed = record.results.filter((result) => result.status === "failed").length
@@ -737,6 +779,15 @@ function formatRunRecord(record: RunRecord): string {
     const running = record.inFlight ?? []
     if (running.length > 0) {
       lines.push("", `**En curso:** ${running.join(", ")}`)
+      for (const taskId of running) {
+        const last = options.lastAction?.(taskId)
+        if (!last) continue
+        lines.push(
+          `- \`${escapeCell(taskId)}\` · última acción: ${escapeCell(last.tool)} → ${escapeCell(
+            last.summary || "(sin argumentos)",
+          )} (${escapeCell(last.ago)})`,
+        )
+      }
     }
     lines.push(
       "",
