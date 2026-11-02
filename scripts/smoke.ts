@@ -33,6 +33,18 @@ import plugin from "../src/index"
 import { registerTools } from "../src/tools"
 import { registerSkills } from "../src/skills"
 import type { PluginCtx, RunRecord, TaskSpec } from "../src/types"
+import {
+  BASE_BRANCH,
+  PROTECTED_BRANCHES,
+  buildMergeMessage,
+  isAlreadyMerged,
+  isEntrypoint,
+  parseArgs,
+  planDocPath,
+  runIdFromBranch,
+  validateBranch,
+  workingTreeBlockers,
+} from "../scripts/cierre.mjs"
 
 function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string[] } = {}): PluginCtx {
   let counter = 0
@@ -1859,3 +1871,123 @@ test("tools: orchestrate registra la sesión orquestadora y cada hija en el feed
   assert.equal(feed.isRegistered("ses_orq_feed"), false, "al cerrar el run se desregistra el orquestador")
   feed.reset()
 })
+
+test("cierre: la validación de rama rechaza vacía, protegidas y nombres inválidos", () => {
+  const empty = validateBranch("")
+  assert.equal(empty.ok, false)
+  assert.match(String(empty.error), /Falta la rama/)
+
+  assert.equal(validateBranch("   ").ok, false, "solo espacios no vale como rama")
+  for (const protectedBranch of PROTECTED_BRANCHES) {
+    assert.equal(validateBranch(protectedBranch).ok, false, `${protectedBranch} está protegida`)
+  }
+  assert.equal(validateBranch("MAIN").ok, false, "la comparación con las protegidas ignora mayúsculas")
+  assert.equal(validateBranch(BASE_BRANCH).ok, false, "la base de integración nunca se cierra")
+  assert.equal(validateBranch("feat/cierre-script").ok, true)
+  assert.equal(validateBranch("feat/con espacios").ok, false)
+  assert.equal(validateBranch("-rama").ok, false)
+  assert.equal(validateBranch("feat/..mal").ok, false)
+  assert.equal(validateBranch("feat/x~1").ok, false)
+})
+
+test("cierre: parsea rama, flags y runId", () => {
+  const full = parseArgs(["feat/x", "--restart", "--run-id", "RUN-A"])
+  assert.deepEqual(full, { branch: "feat/x", restart: true, runId: "RUN-A", help: false, errors: [] })
+
+  const inline = parseArgs(["--run-id=RUN-B", "feat/y"])
+  assert.equal(inline.branch, "feat/y")
+  assert.equal(inline.runId, "RUN-B")
+  assert.equal(inline.restart, false)
+
+  const bare = parseArgs([])
+  assert.equal(bare.branch, "")
+  assert.equal(bare.runId, null)
+  assert.equal(bare.errors.length, 0, "sin argumentos no hay error de sintaxis (lo detecta la validación)")
+
+  assert.equal(parseArgs(["--run-id"]).errors.length, 1, "--run-id sin valor es error")
+  assert.equal(parseArgs(["--run-id="]).errors.length, 1)
+  assert.equal(parseArgs(["feat/x", "--bogus"]).errors.length, 1, "flag desconocido es error")
+  assert.equal(parseArgs(["feat/x", "otra"]).errors.length, 1, "segunda rama es error")
+  assert.equal(parseArgs(["--help"]).help, true)
+  assert.equal(parseArgs(["-h"]).help, true)
+  assert.equal(parseArgs(["--", "--raro"]).branch, "--raro", "tras -- todo es posicional")
+})
+
+test("cierre: el mensaje de merge incluye la rama y el runId cuando se detecta", () => {
+  assert.equal(buildMergeMessage("feat/x", "RUN-A"), "merge: feat/x (RUN-A)")
+  assert.equal(buildMergeMessage("feat/x", null), "merge: feat/x")
+  assert.equal(buildMergeMessage("feat/x", "  "), "merge: feat/x")
+  assert.equal(buildMergeMessage(" feat/x ", undefined), "merge: feat/x")
+})
+
+test("cierre: deduce el runId desde el nombre de la rama", () => {
+  assert.equal(runIdFromBranch("feat/RUN-FASTFLOW-TASK-FF"), "RUN-FASTFLOW-TASK-FF")
+  assert.equal(runIdFromBranch("feat/TASK-RUNHISTORY"), "TASK-RUNHISTORY")
+  assert.equal(runIdFromBranch("feat/cierre-script"), null, "ramas en minúsculas no aportan runId")
+  assert.equal(runIdFromBranch("feat/RUN-ACTIVITY-2"), "RUN-ACTIVITY-2")
+  assert.equal(runIdFromBranch("RUN-LIVEDASH"), "RUN-LIVEDASH", "también sin prefijo feat/")
+  assert.equal(runIdFromBranch("refs/heads/feat/RUN-PNPM"), "RUN-PNPM")
+  assert.equal(runIdFromBranch(""), null)
+  assert.equal(runIdFromBranch(null as unknown as string), null)
+})
+
+test("cierre: deriva la ruta del plan y descarta runIds inseguros", () => {
+  assert.equal(planDocPath("RUN-A"), "docs/plans/RUN-A.md")
+  assert.equal(planDocPath("RUN-A", "custom/planes/"), "custom/planes/RUN-A.md")
+  assert.equal(planDocPath("RUN-A", "custom\\planes"), "custom/planes/RUN-A.md")
+  assert.equal(planDocPath("RUN-A", "  "), "docs/plans/RUN-A.md", "carpeta vacía cae al default")
+  assert.equal(planDocPath("../fuera"), null)
+  assert.equal(planDocPath("a/b"), null)
+  assert.equal(planDocPath("con espacio"), null)
+  assert.equal(planDocPath(".."), null)
+  assert.equal(planDocPath(null), null)
+  assert.equal(planDocPath("RUN-A", "../fuera"), null)
+})
+
+test("cierre: rieles de working tree y rama ya mergeada", () => {
+  assert.deepEqual(workingTreeBlockers(""), [])
+  assert.deepEqual(workingTreeBlockers("  \n "), [])
+  assert.deepEqual(workingTreeBlockers(null), [], "salida vacía del comando cuenta como limpio")
+  assert.deepEqual(workingTreeBlockers(" M scripts/cierre.mjs"), ["M scripts/cierre.mjs"])
+  assert.deepEqual(workingTreeBlockers("?? nuevo.txt"), ["?? nuevo.txt"])
+  assert.deepEqual(
+    workingTreeBlockers("?? docs/plans/RUN-A.md", "docs/plans/RUN-A.md"),
+    [],
+    "el plan del run se tolera sin trackear",
+  )
+  assert.deepEqual(
+    workingTreeBlockers("?? docs/plans/RUN-B.md", "docs/plans/RUN-A.md"),
+    ["?? docs/plans/RUN-B.md"],
+    "un plan de otro run sí bloquea",
+  )
+  assert.deepEqual(
+    workingTreeBlockers("?? docs/", "docs/plans/RUN-A.md"),
+    [],
+    "porcelain puede colapsar la carpeta del plan",
+  )
+  assert.deepEqual(
+    workingTreeBlockers(" M src/x.ts\n?? docs/plans/RUN-A.md", "docs/plans/RUN-A.md"),
+    ["M src/x.ts"],
+    "un archivo modificado sigue bloqueando",
+  )
+  assert.deepEqual(workingTreeBlockers("?? docs/plans/RUN-A.md"), ["?? docs/plans/RUN-A.md"], "sin plan conocido todo bloquea")
+
+  assert.equal(isAlreadyMerged({ branchHead: "abc", mergeBase: "abc" }), true)
+  assert.equal(isAlreadyMerged({ branchHead: "abc", mergeBase: "def" }), false)
+  assert.equal(isAlreadyMerged({ branchHead: "", mergeBase: "" }), false)
+  assert.equal(isAlreadyMerged({}), false)
+})
+
+test("cierre: el CLI solo corre cuando el archivo es el entrypoint", () => {
+  assert.equal(isEntrypoint("C:/repo/scripts/cierre.mjs", "C:/repo/scripts/cierre.mjs"), true)
+  assert.equal(isEntrypoint("C:/repo/scripts/cierre.mjs", "C:/repo/.tmp/smoke.mjs"), false)
+  assert.equal(isEntrypoint("C:/repo/scripts/cierre.mjs", ""), false)
+  assert.equal(isEntrypoint("C:/repo/scripts/cierre.mjs", undefined as unknown as string), false)
+  assert.equal(
+    isEntrypoint("C:/repo/.tmp/smoke.mjs", "C:/repo/.tmp/smoke.mjs"),
+    false,
+    "el bundle de esbuild no debe disparar el CLI",
+  )
+  assert.equal(isEntrypoint("C:/repo/scripts/otro.mjs", "C:/repo/scripts/otro.mjs"), false)
+})
+
