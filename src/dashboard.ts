@@ -9,21 +9,33 @@
  *   instancia viva se cede (con aviso); si es un proceso huérfano se reintenta
  *   una vez.
  * - Todo el arranque es best-effort: el dashboard jamás rompe una orquestación.
- * - `/api/state` (contrato v2) añade la actividad en vivo por tarea en vuelo y
- *   la del orquestador, leída del feed en RAM (`src/activity.ts`).
+ * - `/api/state` sirve el contrato **v4** (árbol de ejecución): además del
+ *   view-model v3 (progreso, estado, actividad), cada nodo lleva `title`,
+ *   `model`, `inFlight` como objetos y `subsessions` anidadas por sesión.
  */
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http"
 
-import { getActivityFeed } from "./activity"
+import {
+  formatTimeAgo,
+  getActivityFeed,
+  type ActivityFeed,
+  type ActivityItem,
+  type DashboardActivitySource,
+  type SessionSummary,
+} from "./activity"
 import { renderDashboardHtml } from "./dashboard-html"
 import {
   buildDashboardView,
-  DASHBOARD_STATE_VERSION,
+  type DashboardActivityRow,
+  type DashboardOrchestratorView,
+  type DashboardRunView,
   type DashboardState,
+  type DashboardTaskRow,
 } from "./dashboard-view"
 import { recentRuns } from "./history"
-import type { PluginCtx } from "./types"
+import { DEFAULT_MODEL_LABEL, inFlightEntries, shortTitle } from "./types"
+import type { InFlightTask, PluginCtx, RunRecord } from "./types"
 
 /** Host del dashboard: siempre loopback. */
 export const DASHBOARD_HOST = "127.0.0.1"
@@ -32,7 +44,71 @@ export const DEFAULT_DASHBOARD_PORT = 4780
 /** Nombre de servicio que se anuncia en /api/health (para detectar instancias). */
 export const DASHBOARD_SERVICE = "aiapaec-dashboard"
 
-export { DASHBOARD_STATE_VERSION }
+/**
+ * Versión del contrato de `/api/state`.
+ *
+ * v4 (árbol de ejecución): `title` por run y por tarea, `model` por nodo,
+ * `inFlight` como objetos y `subsessions` anidadas por sesión. El view-model v3
+ * (`dashboard-view.ts`) conserva su propia versión hasta que la vista lo adopte.
+ */
+export const DASHBOARD_STATE_VERSION = 4
+
+/** Profundidad máxima del árbol de sub-sesiones (evita ciclos en eventos raros). */
+export const MAX_SESSION_DEPTH = 6
+
+/** Tarea en vuelo tal como la publica `/api/state` v4. */
+export interface DashboardInFlightNode {
+  taskId: string
+  agent: string
+  model: string
+  branch?: string
+  startedAt?: string
+  title?: string
+}
+
+/** Sub-sesión anidada: agente, modelo, título y su propia actividad. */
+export interface DashboardSessionNode {
+  id: string
+  title: string
+  agent: string
+  model: string
+  role: string
+  taskId?: string
+  activity: DashboardActivityRow[]
+  subsessions: DashboardSessionNode[]
+}
+
+/** Nodo de tarea: la fila v3 más los campos del árbol. */
+export interface DashboardTaskNode extends DashboardTaskRow {
+  title: string
+  model: string
+  subsessions: DashboardSessionNode[]
+}
+
+/** Nodo raíz del run: la vista v3 más los campos del árbol. */
+export interface DashboardOrchestratorNode extends DashboardOrchestratorView {
+  sessionID?: string
+  agent?: string
+  model?: string
+  title?: string
+  subsessions: DashboardSessionNode[]
+}
+
+export interface DashboardRunNode
+  extends Omit<DashboardRunView, "inFlight" | "tasks" | "orchestrator"> {
+  title: string
+  inFlight: DashboardInFlightNode[]
+  tasks: DashboardTaskNode[]
+  orchestrator?: DashboardOrchestratorNode
+}
+
+export interface DashboardStateV4
+  extends Omit<DashboardState, "version" | "active" | "history"> {
+  version: number
+  active: DashboardRunNode | null
+  history: DashboardRunNode[]
+}
+
 export type { DashboardState }
 
 export interface DashboardHandle {
@@ -212,7 +288,10 @@ async function handleRequest(
       case "/":
       case "/index.html": {
         const state = await readState(ctx)
-        sendHtml(response, renderDashboardHtml(state, { url: `http://${DASHBOARD_HOST}:${bound.port}` }))
+        // El HTML de esta rama todavía pinta el view-model v3; los campos v4
+        // (title/model/subsessions) son aditivos y el cliente los ignora hasta
+        // que la tarea de UI los consuma.
+        sendHtml(response, renderDashboardHtml(state as unknown as DashboardState, { url: `http://${DASHBOARD_HOST}:${bound.port}` }))
         return
       }
       case "/api/health": {
@@ -248,13 +327,226 @@ async function handleRequest(
 }
 
 /** Lee los runs del storage; si falla, devuelve un estado vacío válido. */
-async function readState(ctx: PluginCtx): Promise<DashboardState> {
+async function readState(ctx: PluginCtx): Promise<DashboardStateV4> {
+  const feed = getActivityFeed()
   try {
     const runs = await recentRuns(ctx, 20)
-    return buildDashboardView(runs, new Date(), activitySource())
+    return buildTreeState(runs, new Date(), feed)
   } catch (error) {
     console.warn(`[plugin-orquestacion] dashboard: no se pudo leer el estado (${describeError(error)}).`)
-    return buildDashboardView([], new Date(), activitySource())
+    return buildTreeState([], new Date(), feed)
+  }
+}
+
+/**
+ * Construye el estado v4 (árbol de ejecución) sobre el view-model v3.
+ *
+ * Reutiliza `buildDashboardView` para todo lo que ya estaba resuelto (progreso,
+ * glifos, duración, tokens) y decora cada nodo con `title`, `model`, `inFlight`
+ * como objetos y `subsessions` del feed en RAM. Es puro salvo por el feed: sirve
+ * para `/api/state` y para las pruebas.
+ */
+export function buildTreeState(
+  runs: readonly RunRecord[],
+  now: Date = new Date(),
+  feed: ActivityFeed = getActivityFeed(),
+): DashboardStateV4 {
+  // El view-model v3 lee `inFlight` como IDs: le pasamos los runs sin tareas en
+  // vuelo y las añadimos aquí como nodos v4 (con agente, modelo y startedAt).
+  const sanitized = runs.map((run) => ({ ...run, inFlight: [] as InFlightTask[] }))
+  const base = buildDashboardView(sanitized, now, activitySource(feed))
+  const records = new Map(runs.map((run) => [run.runId, run]))
+  const decorate = (view: DashboardRunView): DashboardRunNode => {
+    const record = records.get(view.runId)
+    if (record) return decorateRun(view, record, now, feed)
+
+    const { inFlight: _inFlight, tasks: _tasks, orchestrator: _orchestrator, ...rest } = view
+    return {
+      ...rest,
+      title: shortTitle(view.objective),
+      inFlight: [],
+      tasks: view.tasks.map(closedOnlyTask),
+    }
+  }
+
+  return {
+    ...base,
+    version: DASHBOARD_STATE_VERSION,
+    active: base.active ? decorate(base.active) : null,
+    history: base.history.map(decorate),
+  }
+}
+
+function closedOnlyTask(row: DashboardTaskRow): DashboardTaskNode {
+  return { ...row, title: row.taskId, model: DEFAULT_MODEL_LABEL, subsessions: [] }
+}
+
+function decorateRun(
+  view: DashboardRunView,
+  record: RunRecord,
+  now: Date,
+  feed: ActivityFeed,
+): DashboardRunNode {
+  const inFlight = inFlightEntries(record.inFlight)
+  const closed = new Set(record.results.map((entry) => entry.taskId))
+  const pending = inFlight.filter((entry) => !closed.has(entry.taskId))
+  const sessions = safeSessions(feed, record.runId)
+  const orchestratorSession = sessions.find((session) => session.role === "orchestrator")
+
+  const tasks: DashboardTaskNode[] = view.tasks.map((row) =>
+    decorateTask(row, record, pending, sessions, now),
+  )
+
+  // Una tarea en vuelo sin fila (run huérfano sin snapshot en vuelo) se añade.
+  const seen = new Set(tasks.map((task) => task.taskId))
+  for (const entry of pending) {
+    if (seen.has(entry.taskId)) continue
+    tasks.push(pendingTask(entry, record, sessions, now, feed))
+  }
+
+  const orchestrator: DashboardOrchestratorNode | undefined = view.orchestrator
+    ? {
+        ...view.orchestrator,
+        ...(orchestratorSession
+          ? {
+              sessionID: orchestratorSession.id,
+              agent: orchestratorSession.agent,
+              model: orchestratorSession.model ?? DEFAULT_MODEL_LABEL,
+              title: orchestratorSession.title,
+            }
+          : {}),
+        subsessions: orchestratorSession ? sessionNodes(orchestratorSession, sessions, now) : [],
+      }
+    : undefined
+
+  const { inFlight: _inFlight, tasks: _tasks, orchestrator: _orchestrator, ...rest } = view
+  return {
+    ...rest,
+    title: record.title || shortTitle(record.objective) || record.runId,
+    inFlight: pending.map(toInFlightNode),
+    tasks,
+    ...(orchestrator ? { orchestrator } : {}),
+  }
+}
+
+function decorateTask(
+  row: DashboardTaskRow,
+  record: RunRecord,
+  pending: readonly InFlightTask[],
+  sessions: readonly SessionSummary[],
+  now: Date,
+): DashboardTaskNode {
+  const result = record.results.find((entry) => entry.taskId === row.taskId)
+  const taskSession = sessions.find(
+    (session) => session.role === "task" && session.taskId === row.taskId,
+  )
+  const inFlightEntry = pending.find((entry) => entry.taskId === row.taskId)
+
+  return {
+    ...row,
+    ...(inFlightEntry
+      ? {
+          agent: inFlightEntry.agent || row.agent,
+          branch: row.isRunning ? inFlightEntry.branch ?? row.branch : row.branch,
+        }
+      : {}),
+    title: inFlightEntry?.title || result?.title || row.taskId,
+    model: inFlightEntry?.model ?? result?.model ?? DEFAULT_MODEL_LABEL,
+    subsessions: taskSession ? sessionNodes(taskSession, sessions, now) : [],
+  }
+}
+
+function pendingTask(
+  entry: InFlightTask,
+  record: RunRecord,
+  sessions: readonly SessionSummary[],
+  now: Date,
+  feed: ActivityFeed,
+): DashboardTaskNode {
+  const running = record.status === "running"
+  const taskSession = sessions.find(
+    (session) => session.role === "task" && session.taskId === entry.taskId,
+  )
+  return {
+    taskId: entry.taskId,
+    title: entry.title || entry.taskId,
+    agent: entry.agent || "—",
+    model: entry.model ?? DEFAULT_MODEL_LABEL,
+    status: running ? "running" : "skipped",
+    glyph: running ? "⏳" : "⏭️",
+    statusText: running ? "en curso" : "sin cerrar",
+    tone: running ? "run" : "skipped",
+    isRunning: running,
+    branch: entry.branch ?? "—",
+    time: "—",
+    summary: "",
+    ...(running
+      ? { activity: toActivityRows(safeActivity(() => feed.activityForTask(record.runId, entry.taskId)), now) }
+      : {}),
+    subsessions: taskSession ? sessionNodes(taskSession, sessions, now) : [],
+  }
+}
+
+function toInFlightNode(entry: InFlightTask): DashboardInFlightNode {
+  return {
+    taskId: entry.taskId,
+    agent: entry.agent || "—",
+    model: entry.model ?? DEFAULT_MODEL_LABEL,
+    ...(entry.branch ? { branch: entry.branch } : {}),
+    ...(entry.startedAt ? { startedAt: entry.startedAt } : {}),
+    ...(entry.title ? { title: entry.title } : {}),
+  }
+}
+
+/** Sub-sesiones de una sesión, anidadas (los eventos raros no pueden ciclar). */
+function sessionNodes(
+  parent: SessionSummary,
+  sessions: readonly SessionSummary[],
+  now: Date,
+  depth = 0,
+): DashboardSessionNode[] {
+  if (depth >= MAX_SESSION_DEPTH) return []
+
+  return sessions
+    .filter((session) => session.parentID === parent.id)
+    .map((session) => ({
+      id: session.id,
+      title: session.title || session.label || session.taskId || session.id,
+      agent: session.agent ?? "—",
+      model: session.model ?? DEFAULT_MODEL_LABEL,
+      role: session.role ?? "sub",
+      ...(session.taskId ? { taskId: session.taskId } : {}),
+      activity: toActivityRows(session.activity, now),
+      subsessions: sessionNodes(session, sessions, now, depth + 1),
+    }))
+}
+
+function safeSessions(feed: ActivityFeed, runId: string): readonly SessionSummary[] {
+  try {
+    const sessions = feed.sessionsForRun(runId)
+    return Array.isArray(sessions) ? sessions : []
+  } catch {
+    return []
+  }
+}
+
+/** Convierte items crudos del feed en filas listas para pintar. */
+function toActivityRows(items: readonly ActivityItem[], now: Date): DashboardActivityRow[] {
+  return items.map((item) => ({
+    tool: item.tool,
+    summary: item.summary,
+    at: item.at,
+    ago: formatTimeAgo(item.at, now),
+  }))
+}
+
+/** Lee la fuente de actividad sin permitir que un fallo rompa el dashboard. */
+function safeActivity(load: () => readonly ActivityItem[]): readonly ActivityItem[] {
+  try {
+    const items = load()
+    return Array.isArray(items) ? items : []
+  } catch {
+    return []
   }
 }
 
@@ -262,8 +554,7 @@ async function readState(ctx: PluginCtx): Promise<DashboardState> {
  * Fuente de actividad para el view-model: el feed en RAM del proceso. Si no
  * hay datos (sin eventos, sin sesiones registradas) devuelve listas vacías.
  */
-function activitySource() {
-  const feed = getActivityFeed()
+function activitySource(feed: ActivityFeed = getActivityFeed()): DashboardActivitySource {
   return {
     task: (runId: string, taskId: string) => feed.activityForTask(runId, taskId),
     orchestrator: (runId: string) => feed.orchestratorActivity(runId),

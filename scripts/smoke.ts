@@ -43,6 +43,13 @@ import { registerTools } from "../src/tools"
 import { registerSkills } from "../src/skills"
 import type { PluginCtx, RunRecord, TaskSpec } from "../src/types"
 import {
+  SHORT_TITLE_MAX,
+  inFlightEntries,
+  modelLabel,
+  shortTitle,
+  toInFlightTask,
+} from "../src/types"
+import {
   BASE_BRANCH,
   PROTECTED_BRANCHES,
   buildMergeMessage,
@@ -120,6 +127,9 @@ function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string
         return [
           {
             type: "assistant",
+            // El SDK declara `model` obligatorio en el assistant: lo usamos para
+            // verificar que el runner persiste el modelo REAL (no el esperado).
+            model: { providerID: "opencode-go", id: "deepseek-v4.1-flash" },
             content: [{ type: "text", text }],
             tokens: { input: 10, output: 5 },
           },
@@ -152,6 +162,16 @@ function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string
     agent: {
       async list() {
         return { data: ["orquestador", "contexto", "explorador", "coder", "qa", "deployer"].map((id) => ({ id })) }
+      },
+      // `AgentInfo.model` es opcional: `contexto` no declara modelo a propósito.
+      async get({ agentID }: any) {
+        const model =
+          agentID === "coder"
+            ? { providerID: "opencode-go", id: "deepseek-v4.1-flash" }
+            : agentID === "qa"
+              ? { providerID: "opencode-go", id: "glm-5.3-flash" }
+              : undefined
+        return { data: { id: agentID, ...(model ? { model } : {}) } }
       },
     },
     command: { async transform() { return { dispose: async () => {} } } },
@@ -960,8 +980,13 @@ test("tools: runHistory se conecta de extremo a extremo", async () => {
     assert.equal(started.metadata.status, "running")
   }
 
-  for (let i = 0; i < 3; i++) {
-    await waitForRun(ctx, `RUN-E2E-${i}`)
+  // El run más antiguo se poda en cuanto termina (runHistory=2), así que no se
+  // puede esperar su registro: se espera a que el historial quede estable.
+  const deadline = Date.now() + 3000
+  while (Date.now() < deadline) {
+    const snapshot = await recentRuns(ctx, 10)
+    if (snapshot.length === 2 && snapshot.every((run) => run.status !== "running")) break
+    await new Promise((resolve) => setTimeout(resolve, 20))
   }
 
   const runs = await recentRuns(ctx, 10)
@@ -1134,7 +1159,7 @@ test("plandocs: renderiza markdown con frontmatter, tabla y estados", () => {
       { id: "T2", agent: "coder", objective: "b", dependsOn: ["T1"], branch: "feat/T2" },
     ],
     results: [{ taskId: "T1", agent: "explorador", status: "succeeded", summary: "resumen T1" }],
-    inFlight: ["T2"],
+    inFlight: [toInFlightTask({ taskId: "T2", agent: "coder" })],
   })
 
   assert.match(markdown, /runId: "RUN-PLAN-1"/)
@@ -1406,7 +1431,8 @@ function dashboardRuns(): RunRecord[] {
 test("dashboard: view-model calcula progreso, historial y filas por tarea", () => {
   const view = buildDashboardView(dashboardRuns(), new Date("2024-01-01T00:00:10.000Z"))
 
-  assert.equal(view.version, DASHBOARD_STATE_VERSION)
+  // El view-model conserva su propia versión; `/api/state` publica la v4.
+  assert.equal(view.version, 3)
   assert.equal(view.active?.runId, "RUN-LIVE")
   assert.equal(view.active?.progressLabel, "2/3")
   assert.equal(view.active?.progressDone, 2)
@@ -1946,7 +1972,7 @@ test("dashboard v2: /api/state expone activity por tarea y la sesión orquestado
   assert.ok(handle, "el dashboard debe arrancar")
   try {
     const state: any = await (await fetch(`${handle!.url}/api/state`)).json()
-    assert.equal(state.version, 3)
+    assert.equal(state.version, DASHBOARD_STATE_VERSION, "el contrato de /api/state es v4")
     assert.equal(state.active.runId, "RUN-ACT-API")
     assert.equal(state.active.tasks[0].activity.length, 1)
     assert.equal(state.active.tasks[0].activity[0].tool, "read")
@@ -2237,5 +2263,373 @@ test("cierre: el CLI solo corre cuando el archivo es el entrypoint", () => {
     "el bundle de esbuild no debe disparar el CLI",
   )
   assert.equal(isEntrypoint("C:/repo/scripts/otro.mjs", "C:/repo/scripts/otro.mjs"), false)
+})
+
+// ---------------------------------------------------------------------------
+// Árbol de ejecución (contrato v4): títulos, modelos, cascada y sub-sesiones
+// ---------------------------------------------------------------------------
+
+test("tipos: shortTitle usa la primera línea y modelLabel normaliza provider/model", () => {
+  assert.equal(shortTitle("primera línea\nsegunda línea"), "primera línea")
+  assert.equal(shortTitle("  espacios   de sobra  "), "espacios de sobra")
+  assert.equal(shortTitle(""), "")
+  assert.equal(shortTitle(undefined), "")
+
+  const long = shortTitle("x".repeat(80))
+  assert.equal(long.length, SHORT_TITLE_MAX)
+  assert.ok(long.endsWith("…"))
+
+  assert.equal(modelLabel({ providerID: "opencode-go", id: "glm-5.3" }), "opencode-go/glm-5.3")
+  assert.equal(modelLabel({ providerID: "p", id: "m", variant: "fast" }), "p/m#fast")
+  assert.equal(modelLabel("opencode-go/x"), "opencode-go/x")
+  assert.equal(modelLabel({ id: "sin-provider" }), undefined)
+  assert.equal(modelLabel(undefined), undefined)
+})
+
+test("tipos: inFlightEntries tolera el historial v3 (IDs) y normaliza los objetos v4", () => {
+  const legacy = inFlightEntries(["T1", " "])
+  assert.equal(legacy.length, 1, "descarta IDs vacíos")
+  assert.equal(legacy[0]!.taskId, "T1")
+  assert.equal(legacy[0]!.agent, "—", "un ID heredado no conoce el agente")
+
+  const modern = inFlightEntries([
+    {
+      taskId: " T2 ",
+      agent: "coder",
+      model: "opencode-go/glm-5.3-flash",
+      branch: "feat/T2",
+      startedAt: "2024-01-01T00:00:00.000Z",
+      title: "Capa de datos",
+    },
+    { agent: "sin-id" },
+  ])
+  assert.equal(modern.length, 1)
+  assert.equal(modern[0]!.taskId, "T2")
+  assert.equal(modern[0]!.agent, "coder")
+  assert.equal(modern[0]!.model, "opencode-go/glm-5.3-flash")
+  assert.equal(modern[0]!.branch, "feat/T2")
+  assert.equal(modern[0]!.title, "Capa de datos")
+  assert.deepEqual(inFlightEntries(undefined), [])
+})
+
+test("activity: la cascada registra las sub-sesiones de una sesión observada", () => {
+  const feed = new ActivityFeed()
+  feed.register("ses_orq_tree", "orquestador", {
+    runId: "RUN-TREE",
+    role: "orchestrator",
+    agent: "orquestador",
+  })
+  feed.register("ses_task_tree", "T1", {
+    runId: "RUN-TREE",
+    taskId: "T1",
+    role: "task",
+    agent: "coder",
+    title: "Implementar la capa de datos",
+  })
+
+  feed.ingest({
+    type: "session.created",
+    created: Date.now(),
+    data: {
+      sessionID: "ses_child_tree",
+      parentID: "ses_task_tree",
+      title: "[orq] explorar dependencias",
+      agent: "explore",
+      model: { providerID: "opencode-go", id: "deepseek-v4.1-flash" },
+      // El runner deja el título corto del nodo en la metadata de la sesión.
+      metadata: { title: "Explorar dependencias" },
+    },
+  })
+
+  assert.equal(feed.isRegistered("ses_child_tree"), true, "la hija de una sesión observada entra sola")
+  const child = feed.sessionInfo("ses_child_tree")!
+  assert.equal(child.role, "sub")
+  assert.equal(child.agent, "explore")
+  assert.equal(child.model, "opencode-go/deepseek-v4.1-flash")
+  assert.equal(child.title, "Explorar dependencias")
+  assert.equal(child.taskId, "T1", "hereda la tarea del padre")
+  assert.equal(feed.childrenOf("ses_task_tree").length, 1)
+  assert.equal(feed.sessionsForRun("RUN-TREE").length, 3)
+
+  feed.ingest({
+    type: "session.tool.called",
+    created: Date.now(),
+    data: { sessionID: "ses_child_tree", id: "c1", name: "read", input: { filePath: "src/types.ts" } },
+  })
+  assert.equal(feed.sessionInfo("ses_child_tree")!.activity[0]!.summary, "src/types.ts")
+  assert.equal(
+    feed.activityForTask("RUN-TREE", "T1").length,
+    1,
+    "la actividad de la sub-sesión se atribuye a la tarea",
+  )
+
+  // Sin padre observado no hay cascada (no se inventan sesiones).
+  feed.ingest({
+    type: "session.created",
+    data: { sessionID: "ses_huerfana", parentID: "ses_desconocida", agent: "x" },
+  })
+  assert.equal(feed.isRegistered("ses_huerfana"), false)
+
+  // La cascada no degrada un rol ya asignado ni pisa el título del runner.
+  feed.register("ses_child_tree", "T1", { taskId: "T1", role: "task", agent: "coder" })
+  assert.equal(feed.sessionInfo("ses_child_tree")!.role, "task")
+  assert.equal(feed.sessionInfo("ses_child_tree")!.title, "Explorar dependencias")
+  feed.cleanup()
+})
+
+test("runner: captura el modelo esperado del agente y el modelo real del assistant", async () => {
+  const ctx = makeCtx({ delayMs: 1 })
+  const starts: Array<{ taskId: string; model?: string; title?: string; startedAt?: string }> = []
+
+  const run = await runOrchestration({
+    ctx,
+    runId: "RUN-MODEL",
+    input: {
+      objective: "modelos por nodo",
+      tasks: [
+        { id: "M1", agent: "coder", objective: "implementar" },
+        { id: "M2", agent: "contexto", objective: "memoria" },
+        { id: "M3", agent: "qa", objective: "validar", model: "opencode-go/glm-5.3-flash#fast" },
+      ],
+    },
+    baseBranch: "dev",
+    workdir: "C:/repo",
+    keepSessions: true,
+    onTaskStart: (info) => {
+      starts.push(info)
+    },
+  })
+
+  const created = (ctx as any).__created as any[]
+  const m1 = created.find((session) => session.metadata?.taskId === "M1")
+  assert.deepEqual(
+    m1.model,
+    { providerID: "opencode-go", id: "deepseek-v4.1-flash" },
+    "el modelo esperado sale del agente",
+  )
+
+  const m2 = created.find((session) => session.metadata?.taskId === "M2")
+  assert.equal(m2.model, undefined, "un agente sin modelo no envía model")
+
+  const m3 = created.find((session) => session.metadata?.taskId === "M3")
+  assert.deepEqual(m3.model, { providerID: "opencode-go", id: "glm-5.3-flash", variant: "fast" })
+
+  const startM1 = starts.find((info) => info.taskId === "M1")!
+  assert.equal(startM1.model, "opencode-go/deepseek-v4.1-flash")
+  assert.equal(startM1.title, "implementar")
+  assert.match(startM1.startedAt!, /^\d{4}-\d{2}-\d{2}T/)
+  assert.equal(starts.find((info) => info.taskId === "M2")!.model, undefined)
+
+  const byId = new Map(run.results.map((entry) => [entry.taskId, entry]))
+  assert.equal(
+    byId.get("M1")!.model,
+    "opencode-go/deepseek-v4.1-flash",
+    "el modelo REAL del assistant manda",
+  )
+  assert.equal(
+    byId.get("M3")!.model,
+    "opencode-go/deepseek-v4.1-flash",
+    "el real del assistant prevalece sobre el override esperado",
+  )
+  assert.equal(byId.get("M1")!.title, "implementar")
+  assert.equal(m1.metadata.title, "implementar", "el título corto viaja en la metadata de la sesión")
+})
+
+test("tools: inFlight se persiste como objetos con título, agente y modelo", async () => {
+  const { ctx, tools } = makeToolCtx({ delayMs: 150 })
+  await registerTools(ctx, TOOL_SETTINGS)
+  const orchestrate = tools.get("orchestrate")!
+  const runStatus = tools.get("run_status")!
+
+  const started = await orchestrate.execute(
+    {
+      objective: "árbol de ejecución\nsegunda línea del objetivo",
+      title: "Árbol v4",
+      runId: "RUN-TREE-DATA",
+      tasks: [
+        { id: "D1", agent: "coder", objective: "Implementar la capa de datos del árbol\ncon detalle" },
+      ],
+    },
+    { sessionID: "ses_orq" },
+  )
+  assert.equal(started.metadata.ok, true)
+
+  let record = await getRun(ctx, "RUN-TREE-DATA")
+  const deadline = Date.now() + 2000
+  while ((!record?.inFlight || record.inFlight.length === 0) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    record = await getRun(ctx, "RUN-TREE-DATA")
+  }
+
+  assert.equal(record!.title, "Árbol v4", "el título del run llega al registro")
+  const entry: any = record!.inFlight![0]
+  assert.equal(typeof entry, "object", "inFlight son objetos en el contrato v4")
+  assert.equal(entry.taskId, "D1")
+  assert.equal(entry.agent, "coder")
+  assert.equal(entry.model, "opencode-go/deepseek-v4.1-flash")
+  assert.equal(entry.branch, "feat/D1")
+  assert.match(entry.startedAt, /^\d{4}-\d{2}-\d{2}T/)
+
+  const status = await runStatus.execute({ runId: "RUN-TREE-DATA" })
+  const text = String(status.content)
+  assert.match(text, /## Orquestación — Árbol v4/)
+  assert.match(text, /En curso:/)
+  assert.match(text, /· Implementar la capa de datos del árbol · coder · opencode-go\/deepseek-v4\.1-flash/)
+
+  const final = await waitForRun(ctx, "RUN-TREE-DATA")
+  assert.equal(final.inFlight?.length, 0, "al cerrar el run no quedan tareas en vuelo")
+  assert.equal(final.results[0]!.title, "Implementar la capa de datos del árbol")
+  assert.equal(final.results[0]!.model, "opencode-go/deepseek-v4.1-flash")
+
+  const sessions = (ctx as any).__created as any[]
+  assert.equal(sessions[0]!.metadata.title, "Implementar la capa de datos del árbol")
+
+  // Sin agente/modelo conocidos, run_status muestra `default`.
+  await saveRun(ctx, {
+    runId: "RUN-TREE-DEFAULT",
+    objective: "sin modelo",
+    baseBranch: "dev",
+    startedAt: new Date().toISOString(),
+    status: "running",
+    totalTasks: 1,
+    inFlight: [toInFlightTask({ taskId: "N1", agent: "contexto", title: "Memoria" })],
+    results: [],
+  })
+  const fallback = await runStatus.execute({ runId: "RUN-TREE-DEFAULT" })
+  assert.match(String(fallback.content), /contexto · default/)
+})
+
+test("dashboard v4: /api/state expone título, modelo, inFlight objetos y sub-sesiones", async () => {
+  const ctx = makeCtx()
+  const feed = getActivityFeed()
+  feed.reset()
+
+  await saveRun(ctx, {
+    runId: "RUN-TREE-API",
+    objective:
+      "objetivo larguísimo que no debe caber en el nodo raíz porque supera los sesenta caracteres de sobra",
+    title: "Árbol v4",
+    baseBranch: "dev",
+    startedAt: new Date().toISOString(),
+    status: "running",
+    totalTasks: 2,
+    inFlight: [
+      toInFlightTask({
+        taskId: "A1",
+        agent: "coder",
+        model: "opencode-go/deepseek-v4.1-flash",
+        branch: "feat/A1",
+        startedAt: "2024-01-01T00:00:00.000Z",
+        title: "Capa de datos",
+      }),
+    ],
+    results: [
+      {
+        taskId: "A0",
+        agent: "contexto",
+        status: "succeeded",
+        title: "Contexto previo",
+        model: "opencode-go/glm-5.3-flash",
+        summary: "ok",
+      },
+    ],
+  })
+
+  feed.register("ses_orq_tree_api", "orquestador", {
+    runId: "RUN-TREE-API",
+    role: "orchestrator",
+    agent: "orquestador",
+  })
+  feed.register("ses_a1", "A1", {
+    runId: "RUN-TREE-API",
+    taskId: "A1",
+    role: "task",
+    agent: "coder",
+    model: "opencode-go/deepseek-v4.1-flash",
+    title: "Capa de datos",
+    parentID: "ses_orq_tree_api",
+  })
+  feed.ingest({
+    type: "session.created",
+    created: Date.now(),
+    data: {
+      sessionID: "ses_a1_child",
+      parentID: "ses_a1",
+      agent: "explore",
+      model: { providerID: "opencode-go", id: "glm-5.3-flash" },
+      title: "[orq] explorar",
+      metadata: { title: "Explorar dependencias" },
+    },
+  })
+  feed.ingest({
+    type: "session.tool.called",
+    created: Date.now(),
+    data: { sessionID: "ses_a1_child", id: "k1", name: "read", input: { filePath: "src/runner.ts" } },
+  })
+
+  const handle = await startDashboard(ctx, 0)
+  assert.ok(handle, "el dashboard debe arrancar")
+  try {
+    const state: any = await (await fetch(`${handle!.url}/api/state`)).json()
+
+    assert.equal(state.version, DASHBOARD_STATE_VERSION)
+    assert.equal(state.active.title, "Árbol v4")
+    assert.equal(state.active.inFlight.length, 1)
+    assert.equal(typeof state.active.inFlight[0], "object")
+    assert.equal(state.active.inFlight[0].taskId, "A1")
+    assert.equal(state.active.inFlight[0].model, "opencode-go/deepseek-v4.1-flash")
+    assert.equal(state.active.inFlight[0].startedAt, "2024-01-01T00:00:00.000Z")
+
+    const closed: any = state.active.tasks.find((task: any) => task.taskId === "A0")
+    assert.equal(closed.title, "Contexto previo")
+    assert.equal(closed.model, "opencode-go/glm-5.3-flash")
+
+    const running: any = state.active.tasks.find((task: any) => task.taskId === "A1")
+    assert.equal(running.isRunning, true)
+    assert.equal(running.title, "Capa de datos")
+    assert.equal(running.model, "opencode-go/deepseek-v4.1-flash")
+    assert.equal(running.branch, "feat/A1")
+    assert.equal(running.subsessions.length, 1, "el nodo cuelga de su sub-sesión")
+    assert.equal(running.subsessions[0].id, "ses_a1_child")
+    assert.equal(running.subsessions[0].agent, "explore")
+    assert.equal(running.subsessions[0].model, "opencode-go/glm-5.3-flash")
+    assert.equal(running.subsessions[0].title, "Explorar dependencias")
+    assert.equal(running.subsessions[0].activity[0].tool, "read")
+    assert.match(running.subsessions[0].activity[0].ago, /^hace \d+[smhd]$/)
+
+    assert.equal(state.active.orchestrator.subsessions.length, 1, "el orquestador es la raíz del árbol")
+    assert.equal(state.active.orchestrator.subsessions[0].id, "ses_a1")
+    assert.equal(state.active.orchestrator.subsessions[0].subsessions[0].id, "ses_a1_child")
+
+    const page = await (await fetch(`${handle!.url}/`)).text()
+    assert.match(page, /Aiapaec · orquestaciones en vivo/)
+  } finally {
+    await handle!.close()
+    feed.reset()
+  }
+})
+
+test("plandocs: el título corto del run y de cada tarea aparece en el plan", () => {
+  const markdown = renderPlanMarkdown({
+    workdir: "C:/repo",
+    folder: "docs/plans",
+    runId: "RUN-TITLE",
+    objective: "objetivo largo del run",
+    title: "Árbol v4",
+    baseBranch: "dev",
+    startedAt: "2024-01-01T00:00:00.000Z",
+    status: "running",
+    tasks: [
+      { id: "T1", agent: "coder", objective: "objetivo largo", title: "Capa de datos" },
+      { id: "T2", agent: "qa", objective: "sin título declarado" },
+    ],
+    results: [],
+    inFlight: [toInFlightTask({ taskId: "T2", agent: "qa", title: "Validar" })],
+  })
+
+  assert.match(markdown, /title: Árbol v4/)
+  assert.match(markdown, /\| ID \| Agente \| Estado \| Rama \| Depende de \| Título \|/)
+  assert.match(markdown, /\| T1 \| coder \| ⏭️ skipped \| — \| — \| Capa de datos \|/)
+  assert.match(markdown, /\| T2 \| qa \| ⏳ running \| — \| — \| — \|/)
 })
 
