@@ -48,10 +48,15 @@ import { registerTools } from "../src/tools"
 import { registerSkills } from "../src/skills"
 import type { PluginCtx, RunRecord, TaskSpec } from "../src/types"
 import {
+  BUILT_IN_MODEL_PROFILES,
+  MODEL_PROFILE_PROVIDER,
   SHORT_TITLE_MAX,
   inFlightEntries,
   modelLabel,
+  profileModel,
+  resolveModelProfiles,
   shortTitle,
+  splitModelRef,
   toInFlightTask,
 } from "../src/types"
 import {
@@ -84,6 +89,8 @@ function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string
   const worktreesRemoved: any[] = []
   const permissionAsserts: any[] = []
   const interrupts: any[] = []
+  const agentUpdates: Array<{ id: string; model?: any }> = []
+  const agentTransformDisposals: string[] = []
   const sessions = new Map<string, { input: any; prompt?: string; messages: any[] }>()
   const storage = new Map<string, any>()
 
@@ -187,6 +194,35 @@ function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string
               : undefined
         return { data: { id: agentID, ...(model ? { model } : {}) } }
       },
+      // Mock del `AgentEditor` real (list/get/default/update/remove): aplica el
+      // transform de forma síncrona y registra los updates para poder validarlos.
+      async transform(callback: any) {
+        const registry = new Map<string, any>([
+          ["orquestador", { id: "orquestador", model: { providerID: "opencode-go", id: "glm-5.3" } }],
+          ...["contexto", "explorador", "coder", "qa", "deployer"].map(
+            (id) => [id, { id }] as [string, any],
+          ),
+        ])
+        callback({
+          list: () => [...registry.values()],
+          get: (id: string) => registry.get(id),
+          default: () => {},
+          update: (id: string, apply: (agent: any) => void) => {
+            const agent = registry.get(id)
+            if (!agent) return
+            apply(agent)
+            agentUpdates.push({ id, model: agent.model })
+          },
+          remove: (id: string) => {
+            registry.delete(id)
+          },
+        })
+        return {
+          dispose: async () => {
+            agentTransformDisposals.push("orquestador")
+          },
+        }
+      },
     },
     command: { async transform() { return { dispose: async () => {} } } },
     tool: { async transform() { return { dispose: async () => {} } } },
@@ -196,6 +232,8 @@ function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string
   ;(ctx as any).__prompts = prompts
   ;(ctx as any).__permissions = permissionAsserts
   ;(ctx as any).__interrupts = interrupts
+  ;(ctx as any).__agentUpdates = agentUpdates
+  ;(ctx as any).__agentTransformDisposals = agentTransformDisposals
   ;(ctx as any).__worktrees = { created: worktreesCreated, removed: worktreesRemoved }
   return ctx
 }
@@ -2927,3 +2965,234 @@ test("dashboard: el script abre msedge --app, cae a chrome y luego al navegador 
   assert.equal(isDashboardEntrypoint("C:/repo/scripts/abrir-dashboard.mjs", "C:/repo/.tmp/smoke.mjs"), false)
 })
 
+
+// ---------------------------------------------------------------------------
+// Perfiles de modelos (RUN-MPROFILES)
+// ---------------------------------------------------------------------------
+
+test("modelProfiles: built-ins y fusión con los perfiles del usuario", () => {
+  assert.deepEqual(Object.keys(BUILT_IN_MODEL_PROFILES), ["high", "balanced", "low", "free"])
+  assert.equal(BUILT_IN_MODEL_PROFILES.high!.orquestador, `${MODEL_PROFILE_PROVIDER}/gemini-4-argon`)
+  assert.equal(BUILT_IN_MODEL_PROFILES.high!.coder, `${MODEL_PROFILE_PROVIDER}/kimi-k3.1-pro`)
+  assert.equal(BUILT_IN_MODEL_PROFILES.high!.deployer, `${MODEL_PROFILE_PROVIDER}/deepseek-v4-pro`)
+  assert.equal(BUILT_IN_MODEL_PROFILES.balanced!.coder, `${MODEL_PROFILE_PROVIDER}/kimi-k2.7-code`)
+  assert.equal(BUILT_IN_MODEL_PROFILES.low!.explorador, `${MODEL_PROFILE_PROVIDER}/mimo-v2.6-flash`)
+  for (const model of Object.values(BUILT_IN_MODEL_PROFILES.free!)) {
+    assert.equal(model, `${MODEL_PROFILE_PROVIDER}/beam-free`, "free usa beam-free en todos los agentes")
+  }
+
+  // Un perfil con el mismo nombre se fusiona agente a agente: las claves del
+  // usuario mandan y el resto se conserva del built-in.
+  const merged = resolveModelProfiles({
+    high: { coder: "custom/pro", qa: "" },
+    barato: { coder: "custom/flash" },
+    roto: { coder: 7 },
+    "   ": { coder: "x/y" },
+  })
+  assert.equal(merged.high!.coder, "custom/pro", "el usuario sobrescribe por agente")
+  assert.equal(merged.high!.orquestador, "opencode-go/gemini-4-argon", "el resto viene del built-in")
+  assert.equal(merged.high!.qa, "opencode-go/glm-5.3", "un valor vacío no pisa el built-in")
+  assert.deepEqual(merged.barato, { coder: "custom/flash" }, "los perfiles nuevos se añaden")
+  assert.equal(merged.roto, undefined, "un perfil sin entradas válidas se descarta")
+
+  assert.equal(BUILT_IN_MODEL_PROFILES.high!.coder, "opencode-go/kimi-k3.1-pro", "los built-in no se mutan")
+  assert.equal(profileModel(merged.high, "coder"), "custom/pro")
+  assert.equal(profileModel(merged.high, "desconocido"), undefined)
+
+  assert.deepEqual(splitModelRef("opencode-go/glm-5.3#fast"), {
+    providerID: "opencode-go",
+    id: "glm-5.3",
+    variant: "fast",
+  })
+  assert.equal(splitModelRef("sin-proveedor"), undefined)
+  assert.equal(splitModelRef("opencode-go/"), undefined)
+})
+
+test("modelProfiles: precedencia task.model > perfil > agente y persistencia", async () => {
+  const { ctx, tools } = makeToolCtx()
+  await registerTools(ctx, {
+    ...TOOL_SETTINGS,
+    modelProfiles: resolveModelProfiles({}),
+    defaultModelProfile: "balanced",
+  })
+  const orchestrate = tools.get("orchestrate")!
+  const runStatus = tools.get("run_status")!
+
+  assert.equal(orchestrate.input.properties.modelProfile.type, "string", "orchestrate acepta modelProfile")
+
+  const started = await orchestrate.execute(
+    {
+      objective: "perfiles de modelos",
+      runId: "RUN-PROFILE-PREC",
+      tasks: [
+        { id: "P1", agent: "coder", objective: "perfil balanced" },
+        { id: "P2", agent: "coder", objective: "override explícito", model: "custom/manual" },
+        { id: "P3", agent: "contexto", objective: "perfil balanced" },
+      ],
+    },
+    { sessionID: "ses_orq" },
+  )
+  assert.equal(started.metadata.modelProfile, "balanced", "sin modelProfile en el run manda el default")
+  assert.match(String(started.content), /\*\*Perfil:\*\* balanced/)
+
+  const record = await waitForRun(ctx, "RUN-PROFILE-PREC")
+  assert.equal(record.modelProfile, "balanced", "el perfil se persiste en el RunRecord")
+
+  const created = (ctx as any).__created as any[]
+  const modelOf = (taskId: string) => created.find((session) => session.metadata?.taskId === taskId)?.model
+  assert.deepEqual(modelOf("P1"), { providerID: "opencode-go", id: "kimi-k2.7-code" }, "el perfil manda sobre el agente")
+  assert.deepEqual(modelOf("P2"), { providerID: "custom", id: "manual" }, "el model de la tarea manda sobre el perfil")
+  assert.deepEqual(modelOf("P3"), { providerID: "opencode-go", id: "glm-5.3-flash" })
+
+  const status = await runStatus.execute({ runId: "RUN-PROFILE-PREC" })
+  assert.match(String(status.content), /\*\*Perfil:\*\* balanced/, "run_status muestra el perfil")
+  assert.equal(status.metadata.modelProfile, "balanced")
+})
+
+test("modelProfiles: un perfil inexistente se avisa y no aborta el run", async () => {
+  const { ctx, tools } = makeToolCtx()
+  await registerTools(ctx, {
+    ...TOOL_SETTINGS,
+    modelProfiles: resolveModelProfiles({}),
+    defaultModelProfile: "balanced",
+  })
+  const orchestrate = tools.get("orchestrate")!
+
+  const started = await orchestrate.execute(
+    {
+      objective: "perfil roto",
+      runId: "RUN-PROFILE-BAD",
+      modelProfile: "inexistente",
+      tasks: [{ id: "B1", agent: "coder", objective: "sin perfil efectivo" }],
+    },
+    { sessionID: "ses_orq" },
+  )
+  assert.equal(started.metadata.ok, true, "un perfil inexistente nunca aborta el plan")
+  assert.equal(started.metadata.modelProfile, undefined, "el run sigue sin perfil")
+  assert.equal(started.metadata.modelProfileWarnings.length, 1)
+  assert.match(String(started.content), /Avisos de `modelProfile`/)
+  assert.match(String(started.content), /inexistente/)
+
+  const record = await waitForRun(ctx, "RUN-PROFILE-BAD")
+  assert.equal(record.status, "completed")
+  assert.equal(record.modelProfile, undefined)
+
+  const created = (ctx as any).__created as any[]
+  assert.deepEqual(
+    created[0].model,
+    { providerID: "opencode-go", id: "deepseek-v4.1-flash" },
+    "sin perfil cae al modelo declarado por el agente",
+  )
+})
+
+test("modelProfiles: el modelProfile del run manda sobre el default y admite perfiles propios", async () => {
+  const { ctx, tools } = makeToolCtx()
+  await registerTools(ctx, {
+    ...TOOL_SETTINGS,
+    modelProfiles: resolveModelProfiles({ propio: { coder: "local/coder-x", qa: "local/qa-x" } }),
+    defaultModelProfile: "balanced",
+  })
+  const orchestrate = tools.get("orchestrate")!
+
+  const started = await orchestrate.execute(
+    {
+      objective: "perfil propio",
+      runId: "RUN-PROFILE-RUN",
+      modelProfile: "propio",
+      tasks: [{ id: "C1", agent: "coder", objective: "usar el perfil del run" }],
+    },
+    { sessionID: "ses_orq" },
+  )
+  assert.equal(started.metadata.modelProfile, "propio", "el perfil del run gana al default")
+
+  const record = await waitForRun(ctx, "RUN-PROFILE-RUN")
+  assert.equal(record.modelProfile, "propio")
+
+  const created = (ctx as any).__created as any[]
+  assert.deepEqual(created[0].model, { providerID: "local", id: "coder-x" })
+})
+
+test("modelProfiles: la opción default aplica el orquestador vía agent.transform", async () => {
+  const setup = (plugin as { setup: (context: PluginCtx) => Promise<() => Promise<void>> }).setup
+
+  const ctx = makeCtx()
+  ctx.options = { dashboardPort: 0, modelProfile: "high" }
+  const dispose = await setup(ctx)
+  try {
+    const updates = (ctx as any).__agentUpdates as Array<{ id: string; model?: any }>
+    assert.deepEqual(updates, [
+      { id: "orquestador", model: { providerID: "opencode-go", id: "gemini-4-argon" } },
+    ])
+  } finally {
+    await dispose()
+  }
+  assert.deepEqual(
+    (ctx as any).__agentTransformDisposals,
+    ["orquestador"],
+    "el transform se libera al descargar el plugin",
+  )
+
+  // Un default inexistente no toca el catálogo de agentes.
+  const missing = makeCtx()
+  missing.options = { dashboardPort: 0, modelProfile: "no-existe" }
+  const disposeMissing = await setup(missing)
+  try {
+    assert.deepEqual((missing as any).__agentUpdates, [], "sin perfil válido no hay transform")
+  } finally {
+    await disposeMissing()
+  }
+
+  // Sin modelProfile no se registra ningún transform.
+  const plain = makeCtx()
+  plain.options = { dashboardPort: 0 }
+  const disposePlain = await setup(plain)
+  try {
+    assert.deepEqual((plain as any).__agentUpdates, [])
+  } finally {
+    await disposePlain()
+  }
+})
+
+test("modelProfiles: el perfil viaja al frontmatter del plan", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "plandocs-profile-"))
+  try {
+    const { ctx, tools } = makeToolCtx()
+    await registerTools(ctx, {
+      ...TOOL_SETTINGS,
+      workdir: tmpDir,
+      planDocs: "docs/plans",
+      modelProfiles: resolveModelProfiles({}),
+      defaultModelProfile: "low",
+    })
+
+    await tools.get("orchestrate")!.execute(
+      {
+        objective: "plan con perfil",
+        runId: "RUN-PLAN-PROFILE",
+        tasks: [{ id: "T1", agent: "qa", objective: "validar" }],
+      },
+      { sessionID: "ses_orq" },
+    )
+    await waitForRun(ctx, "RUN-PLAN-PROFILE")
+
+    const content = fs.readFileSync(path.join(tmpDir, "docs/plans/RUN-PLAN-PROFILE.md"), "utf8")
+    assert.match(content, /^modelProfile: low$/m, "el frontmatter guarda el perfil")
+  } finally {
+    cleanupDir(tmpDir)
+  }
+
+  const state = {
+    workdir: "C:/repo",
+    folder: "docs/plans",
+    runId: "RUN-PLAN-NOPROFILE",
+    objective: "sin perfil",
+    baseBranch: "dev",
+    startedAt: new Date().toISOString(),
+    status: "running" as const,
+    tasks: [],
+    results: [],
+    inFlight: [],
+  }
+  assert.ok(!renderPlanMarkdown(state).includes("modelProfile:"), "sin perfil no se escribe la clave")
+  assert.match(renderPlanMarkdown({ ...state, modelProfile: "free" }), /^modelProfile: free$/m)
+})
