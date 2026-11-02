@@ -59,6 +59,11 @@ export interface TaskSpec {
   model?: string
   /** Nivel de exigencia de la validación de QA (default `L2`). */
   qaLevel?: QaLevel
+  /**
+   * Skills que el orquestador declara para la tarea (p. ej. `["tdd"]`).
+   * Se deduplican; una entrada inválida se descarta sin abortar el plan.
+   */
+  skills?: string[]
   metadata?: Record<string, unknown>
 }
 
@@ -82,6 +87,8 @@ export interface TaskResult {
   worktreeDirectory?: string
   /** Nivel de QA efectivo de la tarea (L1/L2/L3); el runner no lo resuelve, lo adjunta la tool. */
   qaLevel?: QaLevel
+  /** Skills efectivas de la tarea (deduplicadas); las adjunta la tool al persistir el resultado. */
+  skills?: string[]
   /** true si la tarea pasó por un gate de permiso aprobado. */
   gated?: boolean
   /** true si el worktree de la tarea se eliminó al finalizar (cleanup). */

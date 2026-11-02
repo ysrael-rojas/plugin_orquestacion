@@ -10,6 +10,7 @@ import {
   DEFAULT_QA_LEVEL,
   extractReport,
   normalizeQaLevels,
+  normalizeSkills,
   QA_LEVELS,
   QA_LEVEL_GUIDE,
   resolveQaLevel,
@@ -298,6 +299,44 @@ test("contratos: el prompt de qa incluye la definición operativa del nivel", ()
     task: { id: "C1", agent: "coder", objective: "implementar" },
   })
   assert.ok(!coder.includes("## Nivel de QA"), "el nivel solo se inyecta en tareas de qa")
+})
+
+test("skills: normalización sin duplicados y sección condicional en el prompt", () => {
+  assert.deepEqual(
+    normalizeSkills(["tdd", " tdd ", "code-review", 42, "", null]),
+    ["tdd", "code-review"],
+    "descarta no-strings/vacíos y deduplica sin distinguir mayúsculas",
+  )
+  assert.deepEqual(normalizeSkills("tdd"), [], "una forma inesperada devuelve lista vacía, no rompe")
+  assert.deepEqual(normalizeSkills(undefined), [])
+
+  const base = { baseBranch: "dev", runObjective: "implementar" }
+
+  const withSkills = buildTaskPrompt({
+    ...base,
+    task: {
+      id: "C1",
+      agent: "coder",
+      objective: "implementar",
+      skills: ["tdd", "tdd", "code-review"],
+    },
+  })
+  assert.match(withSkills, /## Skills a aplicar/)
+  assert.equal((withSkills.match(/`tdd`/g) ?? []).length, 1, "sin duplicados en el prompt")
+  assert.match(withSkills, /invócala/)
+  assert.match(withSkills, /aplica su disciplina/, "sin la skill disponible se aplica su disciplina")
+
+  const weird = buildTaskPrompt({
+    ...base,
+    task: { id: "C2", agent: "coder", objective: "valores raros", skills: ["", 7] as any },
+  })
+  assert.ok(!weird.includes("## Skills a aplicar"), "sin skills válidas no se inyecta la sección")
+
+  const without = buildTaskPrompt({
+    ...base,
+    task: { id: "C3", agent: "coder", objective: "sin skills" },
+  })
+  assert.ok(!without.includes("## Skills a aplicar"), "sin skills declaradas no hay sección")
 })
 
 test("detección de Engram: conectado, no disponible y ausente", async () => {
@@ -1997,6 +2036,56 @@ test("tools: qaLevel viaja al resultado, run_status lo muestra y el inválido ca
   const prompts = (ctx as any).__prompts as Array<{ taskId: string; text: string }>
   assert.match(prompts.find((entry) => entry.taskId === "Q1")!.text, /## Nivel de QA — L1/)
   assert.match(prompts.find((entry) => entry.taskId === "Q2")!.text, /## Nivel de QA — L2/)
+})
+
+test("tools: skills viajan al prompt, al resultado, persistencia y run_status", async () => {
+  const { ctx, tools } = makeToolCtx()
+  await registerTools(ctx, TOOL_SETTINGS)
+  const orchestrate = tools.get("orchestrate")!
+  const runStatus = tools.get("run_status")!
+
+  const skillsSchema = orchestrate.input.properties.tasks.items.properties.skills
+  assert.equal(skillsSchema.type, "array", "el schema de orchestrate acepta skills")
+  assert.equal(skillsSchema.items.type, "string")
+
+  const started = await orchestrate.execute(
+    {
+      objective: "skills por tarea",
+      runId: "RUN-SKILLS",
+      tasks: [
+        { id: "S1", agent: "coder", objective: "implementar", skills: ["tdd", " tdd "] },
+        {
+          id: "S2",
+          agent: "qa",
+          objective: "validar",
+          qaLevel: "L3",
+          skills: ["code-review", "research", 7, ""],
+        },
+        { id: "S3", agent: "coder", objective: "sin skills" },
+      ],
+    },
+    { sessionID: "ses_orq" },
+  )
+
+  assert.equal(started.metadata.ok, true, "valores raros en skills no abortan el plan")
+
+  const record = await waitForRun(ctx, "RUN-SKILLS")
+  const byId = new Map(record.results.map((entry) => [entry.taskId, entry]))
+  assert.deepEqual(byId.get("S1")!.skills, ["tdd"], "deduplica y persiste las skills")
+  assert.deepEqual(byId.get("S2")!.skills, ["code-review", "research"], "descarta valores inválidos")
+  assert.equal(byId.get("S3")!.skills, undefined, "sin skills no se persiste la lista")
+
+  const prompts = (ctx as any).__prompts as Array<{ taskId: string; text: string }>
+  assert.match(prompts.find((entry) => entry.taskId === "S1")!.text, /## Skills a aplicar/)
+  assert.match(prompts.find((entry) => entry.taskId === "S2")!.text, /code-review/)
+  assert.ok(
+    !prompts.find((entry) => entry.taskId === "S3")!.text.includes("## Skills a aplicar"),
+    "la sección es condicional",
+  )
+
+  const status = await runStatus.execute({ runId: "RUN-SKILLS" })
+  assert.match(String(status.content), /coder · L2 · tdd/, "run_status muestra el sufijo de skills")
+  assert.match(String(status.content), /qa · L3 · code-review\+research/)
 })
 
 test("tools: orchestrate registra la sesión orquestadora y cada hija en el feed", async () => {

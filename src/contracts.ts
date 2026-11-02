@@ -50,6 +50,27 @@ export function normalizeQaLevels(tasks: readonly TaskSpec[]): QaLevelNormalizat
   return { tasks: normalized, warnings }
 }
 
+/**
+ * Normaliza las skills declaradas para una tarea: solo strings no vacíos, sin
+ * duplicados (comparación sin distinguir mayúsculas) y conservando el orden.
+ * Una forma inesperada (no array) devuelve lista vacía: nunca aborta el plan.
+ */
+export function normalizeSkills(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  const seen = new Set<string>()
+  const skills: string[] = []
+  for (const entry of raw) {
+    if (typeof entry !== "string") continue
+    const skill = entry.trim()
+    if (!skill) continue
+    const key = skill.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    skills.push(skill)
+  }
+  return skills
+}
+
 /** Contrato A: tarea asignada del orquestador al subagente. */
 export function buildTaskContract(task: TaskSpec, baseBranch: string) {
   // El nivel solo viaja en el contrato de las tareas de QA o cuando la tarea
@@ -148,6 +169,20 @@ export function buildTaskPrompt(options: PromptOptions): string {
       QA_LEVEL_GUIDE[qaLevel],
       "",
       `Niveles válidos: ${QA_LEVELS.join(" · ")} (default ${DEFAULT_QA_LEVEL}). Reporta la evidencia exigida por el nivel; si el contrato trae más trabajo del que el nivel permite evidenciar, dilo en el resumen.`,
+    )
+  }
+
+  // Skills declaradas por el orquestador: deterministas y por tarea. Si la
+  // skill no existe en este entorno, se aplica su disciplina igualmente.
+  const skills = normalizeSkills(task.skills)
+  if (skills.length > 0) {
+    lines.push(
+      "",
+      "## Skills a aplicar",
+      "",
+      `Skills declaradas para esta tarea: ${skills.map((skill) => `\`${skill}\``).join(", ")}.`,
+      "",
+      "Si una skill está disponible en este entorno, invócala; si no, aplica su disciplina igualmente (una skill ausente no justifica abortar la tarea).",
     )
   }
 
