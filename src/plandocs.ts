@@ -2,7 +2,7 @@
  * Renderizador y escritor de documentos de plan (`docs/plans/<runId>.md`).
  *
  * Cada orquestación genera un Markdown vivo con:
- *  - frontmatter YAML (runId, objective, status, baseBranch, timestamps)
+ *  - frontmatter YAML (runId, objective, status, modelProfile, baseBranch, timestamps)
  *  - sección de contexto
  *  - tabla de tareas con estado
  *  - línea de summary por tarea
@@ -77,6 +77,7 @@ export function renderPlanMarkdown(state: PlanDocsState): string {
   if (state.title) lines.push(`title: ${yamlValue(state.title)}`)
   lines.push(`objective: ${yamlValue(state.objective)}`)
   lines.push(`status: ${yamlValue(state.status)}`)
+  if (state.modelProfile) lines.push(`modelProfile: ${yamlValue(state.modelProfile)}`)
   lines.push(`baseBranch: ${yamlValue(state.baseBranch)}`)
   lines.push(`startedAt: ${yamlValue(state.startedAt)}`)
   if (state.finishedAt) {

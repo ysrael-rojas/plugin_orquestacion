@@ -5,9 +5,10 @@ import { detectEngram, formatEngramStatus } from "./engram"
 import { getRun, pruneRuns, recentRuns, saveRun } from "./history"
 import { planDocsRelativePath, statusIcon, writePlanDocs } from "./plandocs"
 import { runOrchestration, validateTasks } from "./runner"
-import { DEFAULT_MODEL_LABEL, inFlightEntries, shortTitle, toInFlightTask } from "./types"
+import { DEFAULT_MODEL_LABEL, inFlightEntries, modelLabel, normalizeModelProfileName, profileModel, shortTitle, toInFlightTask } from "./types"
 import type {
   InFlightTask,
+  ModelProfile,
   OrchestrateInput,
   PlanDocsState,
   PluginCtx,
@@ -30,6 +31,10 @@ export interface ToolSettings {
   /** Carpeta relativa destino del plan; `false` desactiva el documento. */
   planDocs: string | false
   workdir: string
+  /** Perfiles de modelos disponibles (built-in + usuario), resueltos por el setup. */
+  modelProfiles?: Record<string, ModelProfile>
+  /** Perfil aplicado cuando el run no declara `modelProfile`. */
+  defaultModelProfile?: string
   /** Dashboard local activo en esta instancia (si se pudo arrancar). */
   dashboard?: { port: number; url: string }
 }
@@ -185,6 +190,13 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             },
             additionalProperties: false,
           },
+          modelProfile: {
+            type: "string",
+            description:
+              "Perfil de modelos del run (built-in high/balanced/low/free o uno de modelProfiles). " +
+              "Manda sobre el perfil por defecto del plugin; el `model` de cada tarea manda sobre el perfil. " +
+              "Un perfil inexistente se avisa y el run sigue sin perfil (nunca aborta).",
+          },
           cleanupWorktrees: {
             type: "boolean",
             description:
@@ -206,12 +218,38 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
         // Los títulos del árbol se resuelven aquí una sola vez: declarado o
         // primera línea del objective (60 caracteres).
         const normalizedQa = normalizeQaLevels(payload.tasks ?? [])
-        const tasks: TaskSpec[] = normalizedQa.tasks.map((task) => ({
-          ...task,
-          title: normalizeTitle(task.title) ?? shortTitle(task.objective),
-        }))
         const qaLevelWarnings = normalizedQa.warnings
         const runTitle = normalizeTitle(payload.title) ?? shortTitle(payload.objective)
+
+        // Perfil de modelos: el del run manda sobre el default del plugin. Un
+        // nombre inexistente se avisa y el run corre sin perfil (nunca aborta).
+        const profiles = settings.modelProfiles ?? {}
+        const requestedProfile =
+          normalizeModelProfileName(payload.modelProfile) ?? settings.defaultModelProfile
+        const modelProfileWarnings: string[] = []
+        let activeProfile: string | undefined
+        if (requestedProfile) {
+          if (profiles[requestedProfile]) {
+            activeProfile = requestedProfile
+          } else {
+            modelProfileWarnings.push(
+              `modelProfile inexistente: ${JSON.stringify(requestedProfile)}; el run sigue sin perfil. ` +
+                `Perfiles disponibles: ${Object.keys(profiles).join(", ") || "(ninguno)"}.`,
+            )
+          }
+        }
+        const profile = activeProfile ? profiles[activeProfile] : undefined
+
+        const tasks: TaskSpec[] = normalizedQa.tasks.map((task) => {
+          // Precedencia del modelo: `model` de la tarea > perfil del agente >
+          // modelo declarado por el agente (lo resuelve el runner).
+          const model = modelLabel(task.model) ?? profileModel(profile, task.agent)
+          return {
+            ...task,
+            title: normalizeTitle(task.title) ?? shortTitle(task.objective),
+            ...(model ? { model } : {}),
+          }
+        })
 
         const knownAgents = await listAgentIds(ctx)
         if (!knownAgents) {
@@ -289,6 +327,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           runId,
           objective: payload.objective,
           title: runTitle,
+          ...(activeProfile ? { modelProfile: activeProfile } : {}),
           baseBranch: settings.baseBranch,
           startedAt,
           status: "running",
@@ -316,6 +355,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             runId,
             objective: payload.objective,
             title: runTitle,
+            ...(activeProfile ? { modelProfile: activeProfile } : {}),
             baseBranch: settings.baseBranch,
             startedAt,
             status: "running",
@@ -497,12 +537,23 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
           `## ▶️ Orquestación iniciada — ${payload.objective}`,
           "",
           `**runId:** \`${runId}\` · **Tareas:** ${tasks.length} · **Base:** \`${settings.baseBranch}\``,
+        ]
+        if (activeProfile) written.push(`**Perfil:** ${activeProfile}`)
+        written.push(
           "",
           "El trabajo corre en segundo plano: las sesiones hijas siguen aunque esta llamada se interrumpa.",
           `Consulta el avance con \`aiapaec_run_status\` usando \`runId: "${runId}"\`. No relances el run sin verificar su estado.`,
-        ]
+        )
         if (qaLevelWarnings.length > 0) {
           written.push("", "## ⚠️ Avisos de `qaLevel`", "", ...qaLevelWarnings.map((warning) => `- ${warning}`))
+        }
+        if (modelProfileWarnings.length > 0) {
+          written.push(
+            "",
+            "## ⚠️ Avisos de `modelProfile`",
+            "",
+            ...modelProfileWarnings.map((warning) => `- ${warning}`),
+          )
         }
         const dashboard = dashboardLine(settings)
         if (dashboard) written.push("", dashboard)
@@ -514,7 +565,9 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
             runId,
             status: "running",
             totalTasks: tasks.length,
+            ...(activeProfile ? { modelProfile: activeProfile } : {}),
             ...(qaLevelWarnings.length > 0 ? { qaLevelWarnings } : {}),
+            ...(modelProfileWarnings.length > 0 ? { modelProfileWarnings } : {}),
             ...(settings.dashboard ? { dashboard: settings.dashboard.url } : {}),
           },
         }
@@ -583,6 +636,7 @@ export function registerTools(ctx: PluginCtx, settings: ToolSettings) {
                 done: record.results.length,
                 totalTasks: record.totalTasks,
                 results: record.results,
+                ...(record.modelProfile ? { modelProfile: record.modelProfile } : {}),
                 ...(settings.dashboard ? { dashboard: settings.dashboard.url } : {}),
               },
             }
@@ -842,6 +896,10 @@ function formatRunRecord(
     "",
     `**Run:** \`${record.runId}\` · **Estado:** ${statusIcon(record.status)} ${record.status} · **Progreso:** ${done}/${record.totalTasks}`,
   ]
+
+  if (record.modelProfile) {
+    lines.push(`**Perfil:** ${record.modelProfile}`)
+  }
 
   if (record.finishedAt) {
     lines.push(`**Inicio:** ${record.startedAt} · **Fin:** ${record.finishedAt}`)

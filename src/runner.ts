@@ -2,7 +2,7 @@ import { dirname, join } from "node:path"
 
 import { buildTaskPrompt, extractReport } from "./contracts"
 import { buildSessionPermissions } from "./permissions"
-import { modelLabel, shortTitle } from "./types"
+import { modelLabel, shortTitle, splitModelRef } from "./types"
 import type {
   OrchestrateInput,
   PluginCtx,
@@ -477,17 +477,13 @@ async function executeTask(
 }
 
 function parseModelRef(raw: string): { providerID: string; id: string; variant?: string } {
-  const slash = raw.indexOf("/")
-  if (slash <= 0) {
+  const ref = splitModelRef(raw)
+  if (!ref) {
     throw new Error(
       `Modelo inválido "${raw}". Usa el formato "providerID/modelID", por ejemplo "opencode-go/glm-5.3-flash".`,
     )
   }
-  const providerID = raw.slice(0, slash)
-  const rest = raw.slice(slash + 1)
-  const hash = rest.indexOf("#")
-  if (hash <= 0) return { providerID, id: rest }
-  return { providerID, id: rest.slice(0, hash), variant: rest.slice(hash + 1) }
+  return ref
 }
 
 /**
