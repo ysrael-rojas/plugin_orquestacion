@@ -18,6 +18,7 @@
     "agents:sync": "esbuild scripts/sync-agents.ts --bundle --platform=node --format=esm --outfile=.tmp/sync-agents.mjs --log-level=error && node .tmp/sync-agents.mjs",
     "agents:install": "esbuild scripts/sync-agents.ts --bundle --platform=node --format=esm --outfile=.tmp/sync-agents.mjs --log-level=error && node .tmp/sync-agents.mjs --install",
     "agents:check": "esbuild scripts/check-agents.ts --bundle --platform=node --format=esm --outfile=.tmp/check-agents.mjs --log-level=error && node .tmp/check-agents.mjs",
+    "cierre": "node scripts/cierre.mjs",
     "test": "pnpm run lint && pnpm run typecheck && esbuild scripts/smoke.ts --bundle --platform=node --format=esm --outfile=.tmp/smoke.mjs --log-level=error && node --test .tmp/smoke.mjs"
   },
   "dependencies": {
