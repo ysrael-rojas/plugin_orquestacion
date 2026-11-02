@@ -28,6 +28,149 @@ export interface TaskContextInfo {
   engram_ids?: string[]
 }
 
+/**
+ * Perfil de modelos: mapea cada agente del catálogo Aiapaec (`orquestador`,
+ * `contexto`, `explorador`, `coder`, `qa`, `deployer`) a un modelo en formato
+ * `providerID/modelID` (variante opcional con `#variant`).
+ *
+ * Un agente ausente del perfil conserva su modelo declarado en `opencode.json`.
+ */
+export type ModelProfile = Record<string, string>
+
+/** Agente primario cuyo modelo puede sobrescribirse vía `ctx.agent.transform`. */
+export const ORCHESTRATOR_AGENT_ID = "orquestador"
+
+/** Proveedor por defecto de los perfiles built-in. */
+export const MODEL_PROFILE_PROVIDER = "opencode-go"
+
+function modelRef(modelID: string): string {
+  return `${MODEL_PROFILE_PROVIDER}/${modelID}`
+}
+
+/**
+ * Perfiles de modelos built-in (fusionables con los del usuario).
+ *
+ * - `high`: máxima capacidad por agente.
+ * - `balanced`: equilibrio costo/calidad (default razonable).
+ * - `low`: modelos rápidos y baratos.
+ * - `free`: modelos gratuitos del proveedor.
+ *
+ * El usuario puede sobrescribir un perfil por nombre, agente a agente, o
+ * agregar perfiles nuevos (`PluginOptions.modelProfiles`).
+ */
+export const BUILT_IN_MODEL_PROFILES: Record<string, ModelProfile> = {
+  high: {
+    orquestador: modelRef("gemini-4-argon"),
+    contexto: modelRef("glm-5.3"),
+    explorador: modelRef("glm-5.3"),
+    coder: modelRef("kimi-k3.1-pro"),
+    qa: modelRef("glm-5.3"),
+    deployer: modelRef("deepseek-v4-pro"),
+  },
+  balanced: {
+    orquestador: modelRef("glm-5.3"),
+    contexto: modelRef("glm-5.3-flash"),
+    explorador: modelRef("glm-5.3-flash"),
+    coder: modelRef("kimi-k2.7-code"),
+    qa: modelRef("glm-5.3-flash"),
+    deployer: modelRef("deepseek-v4.1-flash"),
+  },
+  low: {
+    orquestador: modelRef("glm-5.3-flash"),
+    contexto: modelRef("mimo-v2.6-flash"),
+    explorador: modelRef("mimo-v2.6-flash"),
+    coder: modelRef("deepseek-v4.1-flash"),
+    qa: modelRef("mimo-v2.6-flash"),
+    deployer: modelRef("mimo-v2.6-flash"),
+  },
+  free: {
+    orquestador: modelRef("beam-free"),
+    contexto: modelRef("beam-free"),
+    explorador: modelRef("beam-free"),
+    coder: modelRef("beam-free"),
+    qa: modelRef("beam-free"),
+    deployer: modelRef("beam-free"),
+  },
+}
+
+/** Normaliza un nombre de perfil (string no vacío) o `undefined`. */
+export function normalizeModelProfileName(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined
+  const name = raw.trim()
+  return name || undefined
+}
+
+/**
+ * Normaliza `modelProfiles` declarados en `opencode.json`: solo objetos con al
+ * menos una entrada válida (`agente` → `providerID/modelID`). Una forma
+ * inesperada devuelve un objeto vacío; nunca lanza.
+ */
+export function normalizeModelProfiles(raw: unknown): Record<string, ModelProfile> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {}
+
+  const profiles: Record<string, ModelProfile> = {}
+  for (const [rawName, rawProfile] of Object.entries(raw as Record<string, unknown>)) {
+    const name = normalizeModelProfileName(rawName)
+    if (!name) continue
+    if (!rawProfile || typeof rawProfile !== "object" || Array.isArray(rawProfile)) continue
+
+    const profile: ModelProfile = {}
+    for (const [rawAgent, rawModel] of Object.entries(rawProfile as Record<string, unknown>)) {
+      const agent = normalizeModelProfileName(rawAgent)
+      const model = normalizeModelProfileName(rawModel)
+      if (!agent || !model) continue
+      profile[agent] = model
+    }
+    if (Object.keys(profile).length > 0) profiles[name] = profile
+  }
+  return profiles
+}
+
+/**
+ * Fusiona los perfiles del usuario con los built-in. Un perfil del usuario con
+ * el mismo nombre sobrescribe **agente a agente** (sus claves mandan y el resto
+ * se conserva del built-in); los nombres nuevos se añaden tal cual.
+ */
+export function resolveModelProfiles(raw: unknown): Record<string, ModelProfile> {
+  const user = normalizeModelProfiles(raw)
+  const merged: Record<string, ModelProfile> = {}
+  for (const [name, profile] of Object.entries(BUILT_IN_MODEL_PROFILES)) {
+    merged[name] = { ...profile }
+  }
+  for (const [name, profile] of Object.entries(user)) {
+    merged[name] = { ...(merged[name] ?? {}), ...profile }
+  }
+  return merged
+}
+
+/** Modelo de un agente dentro de un perfil (`undefined` si el perfil no lo declara). */
+export function profileModel(profile: ModelProfile | undefined, agent: string): string | undefined {
+  const model = profile?.[agent]
+  return typeof model === "string" && model.trim() ? model.trim() : undefined
+}
+
+/**
+ * Descompone `providerID/modelID[#variant]`. Devuelve `undefined` si la
+ * referencia no es utilizable (sin proveedor o sin id).
+ */
+export function splitModelRef(
+  raw: string,
+): { providerID: string; id: string; variant?: string } | undefined {
+  if (typeof raw !== "string") return undefined
+  const text = raw.trim()
+  const slash = text.indexOf("/")
+  if (slash <= 0 || slash === text.length - 1) return undefined
+  const providerID = text.slice(0, slash)
+  const rest = text.slice(slash + 1)
+  const hash = rest.indexOf("#")
+  if (hash === 0) return undefined
+  if (hash < 0) return { providerID, id: rest }
+  const id = rest.slice(0, hash)
+  if (!id) return undefined
+  const variant = rest.slice(hash + 1)
+  return variant ? { providerID, id, variant } : { providerID, id }
+}
+
 export interface TaskPermissions {
   write_files?: boolean
   execute_bash?: boolean
@@ -85,6 +228,11 @@ export interface OrchestrateInput {
   keepSessions?: boolean
   /** Contexto adicional de la orquestación (usado en el documento de plan). */
   context?: TaskContextInfo
+  /**
+   * Perfil de modelos del run (override del default del plugin). Si no existe,
+   * el run sigue sin perfil y se avisa en la respuesta (nunca aborta).
+   */
+  modelProfile?: string
 }
 
 export type TaskStatus = "succeeded" | "failed" | "skipped" | "unconfirmed"
@@ -196,6 +344,8 @@ export interface RunRecord {
   objective: string
   /** Título corto del run en el árbol (fallback: `objective`). */
   title?: string
+  /** Perfil de modelos aplicado al run (`PluginOptions.modelProfiles`); ausente si no hay perfil. */
+  modelProfile?: string
   baseBranch: string
   startedAt: string
   finishedAt?: string
@@ -239,6 +389,8 @@ export interface PlanDocsState {
   objective: string
   /** Título corto del run. */
   title?: string
+  /** Perfil de modelos efectivo del run (si lo hay). */
+  modelProfile?: string
   baseBranch: string
   startedAt: string
   finishedAt?: string
@@ -298,6 +450,12 @@ export interface PluginCtx {
      * contextos de prueba antiguos.
      */
     get?(input: any): Promise<any> | any
+    /**
+     * Transform del catálogo de agentes (`AgentEditor`: list/get/default/
+     * update/remove). Se usa para aplicar el modelo del orquestador según el
+     * perfil por defecto; es opcional para contextos de prueba antiguos.
+     */
+    transform?(cb: (editor: any) => void): Promise<{ dispose?: () => Promise<void> }>
   }
   command: {
     transform(cb: (editor: any) => void): Promise<{ dispose?: () => Promise<void> }>
@@ -328,6 +486,18 @@ export interface PluginOptions {
    * `0` desactiva el dashboard; un valor inválido cae a `4780` con warning.
    */
   dashboardPort?: number
+  /**
+   * Perfiles de modelos propios (se fusionan con los built-in `high`,
+   * `balanced`, `low` y `free`; un perfil con el mismo nombre sobrescribe
+   * agente a agente). Cada valor va en formato `providerID/modelID`.
+   */
+  modelProfiles?: Record<string, ModelProfile>
+  /**
+   * Perfil aplicado a los runs que no declaren `modelProfile`. Debe existir en
+   * `modelProfiles` (built-in o propio); si no existe se ignora con warning.
+   * Su modelo de `orquestador` se aplica vía `ctx.agent.transform`.
+   */
+  modelProfile?: string
 }
 
 /** Longitud máxima de un título corto derivado del objective. */
