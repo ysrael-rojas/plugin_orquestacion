@@ -228,6 +228,26 @@ Si el subagente no devuelve un reporte JSON con `status`, la tarea queda en esta
 - Sin merge ni push a la rama base: el merge lo aprueba el humano.
 - Con `worktree: true` cada tarea corre aislada en su propio worktree, lo que permite varios coder en paralelo sin conflictos de rama.
 
+## Cierre de run
+
+Tras la aprobación humana, el cierre se automatiza con un script sin dependencias nuevas (solo Node):
+
+```powershell
+pnpm run cierre -- feat/mi-rama [--run-id RUN-MI-RUN] [--restart]
+```
+
+Orden de pasos y qué imprime cada uno (✅/❌):
+
+1. **Rieles de seguridad** — aborta sin tocar nada si: falta la rama, la rama es `main`/`dev`/`master`, la rama no existe, el working tree tiene cambios sin commitear, o la rama ya está mergeada en `dev` (mismo commit que el `merge-base`). Si `HEAD` no está en `dev`, hace `git checkout dev` (solo con el árbol limpio).
+2. **Merge** — `git merge --no-ff -m "merge: <rama> (<runId>)"`. El `runId` sale de `--run-id` si se pasa; si no, se intenta deducir de la rama (`feat/RUN-ACTIVITY` → `RUN-ACTIVITY`).
+3. **Documento de plan** — si existe `docs/plans/<runId>.md` sin trackear, lo agrega y commitea como `docs: plan de <runId>`. Sin `runId` deducible el archivo cuenta como cambio pendiente: pasa `--run-id` o commitéalo a mano.
+4. **Pruebas** — `pnpm test`. Si fallan, deshace el merge con `git reset --hard` al SHA capturado justo antes del merge y **no hace push**.
+5. **Push** — `git push origin dev`, solo con las pruebas en verde.
+6. **Limpieza** — `git branch -d <rama>` (si la rama está abierta en otro worktree se avisa y se deja intacta).
+7. **Reinicio opcional** — con `--restart` ejecuta `opencode service restart` como última acción; la conexión de la sesión que lo invocó se corta (es esperado).
+
+El script corre en el repositorio actual (`process.cwd()`): úsalo desde el repo principal, no desde un worktree de tarea. Las funciones puras (validación de rama, mensaje de merge, detección de `runId`, análisis de `git status`) se exportan desde `scripts/cierre.mjs` y están cubiertas en `scripts/smoke.ts`.
+
 ## Opciones del plugin
 
 | Opción | Default | Descripción |
