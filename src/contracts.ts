@@ -1,7 +1,61 @@
-import type { TaskSpec } from "./types"
+import type { QaLevel, TaskSpec } from "./types"
+
+/** Niveles válidos de exigencia de QA, de menos a más profundo. */
+export const QA_LEVELS: readonly QaLevel[] = ["L1", "L2", "L3"]
+
+/** Nivel que se aplica cuando la tarea no declara `qaLevel`. */
+export const DEFAULT_QA_LEVEL: QaLevel = "L2"
+
+/**
+ * Definición operativa de cada nivel. Se inyecta en el prompt de las tareas
+ * con agente `qa` para que el subagente sepa qué evidencia se le exige.
+ */
+export const QA_LEVEL_GUIDE: Record<QaLevel, string> = {
+  L1: "smoke: ejecuta `pnpm test` y reporta pass/fail con evidencia del comando; nada más.",
+  L2: "estándar: valida contra el spec del contrato con evidencia (comando + salida, `archivo:línea` en desviaciones).",
+  L3: "forense: L2 + verificación de supuestos técnicos contra fuentes reales (p. ej. nombres de eventos/APIs contra los `.d.ts` del SDK, comportamientos no cubiertos por tests mockeados).",
+}
+
+export function isQaLevel(value: unknown): value is QaLevel {
+  return value === "L1" || value === "L2" || value === "L3"
+}
+
+/** Nivel efectivo: el declarado si es válido, si no `DEFAULT_QA_LEVEL`. */
+export function resolveQaLevel(task: Pick<TaskSpec, "qaLevel">): QaLevel {
+  return isQaLevel(task.qaLevel) ? task.qaLevel : DEFAULT_QA_LEVEL
+}
+
+export interface QaLevelNormalization {
+  /** Copia de las tareas con el `qaLevel` declarado válido (o L2 si era inválido). */
+  tasks: TaskSpec[]
+  /** Avisos de valores inválidos que cayeron a `DEFAULT_QA_LEVEL`. */
+  warnings: string[]
+}
+
+/**
+ * Normaliza el `qaLevel` declarado en cada tarea. Política elegida: un valor
+ * inválido **no aborta el plan**, cae a `L2` con un aviso visible en la
+ * respuesta de `aiapaec_orchestrate` y en `metadata.qaLevelWarnings`.
+ */
+export function normalizeQaLevels(tasks: readonly TaskSpec[]): QaLevelNormalization {
+  const warnings: string[] = []
+  const normalized = tasks.map((task) => {
+    if (task.qaLevel === undefined || isQaLevel(task.qaLevel)) return task
+    warnings.push(
+      `qaLevel inválido en la tarea ${task.id}: ${JSON.stringify(task.qaLevel)}; se usa ${DEFAULT_QA_LEVEL}. Niveles válidos: ${QA_LEVELS.join(", ")}.`,
+    )
+    return { ...task, qaLevel: DEFAULT_QA_LEVEL }
+  })
+
+  return { tasks: normalized, warnings }
+}
 
 /** Contrato A: tarea asignada del orquestador al subagente. */
 export function buildTaskContract(task: TaskSpec, baseBranch: string) {
+  // El nivel solo viaja en el contrato de las tareas de QA o cuando la tarea
+  // lo declara explícitamente (evita ruido en tareas de coder/explorador).
+  const qaLevel = task.agent === "qa" || task.qaLevel !== undefined ? resolveQaLevel(task) : undefined
+
   return {
     task_id: task.id,
     target_agent: task.agent,
@@ -11,6 +65,7 @@ export function buildTaskContract(task: TaskSpec, baseBranch: string) {
     scope: task.scope ?? {},
     context_references: task.context ?? {},
     permissions: task.permissions ?? {},
+    ...(qaLevel ? { qa_level: qaLevel } : {}),
   }
 }
 
@@ -80,6 +135,20 @@ export function buildTaskPrompt(options: PromptOptions): string {
       lines.push(`- **${entry.taskId}**: \`${entry.worktreeDirectory}\`${branch}`)
     }
     lines.push("Si necesitas revisar ese trabajo, hazlo sobre esa copia aislada; no la modifiques.")
+  }
+
+  // Nivel de QA: solo aplica a tareas de validación (agente `qa`). Sin
+  // `qaLevel` declarado se asume L2 (estándar).
+  if (task.agent === "qa") {
+    const qaLevel = resolveQaLevel(task)
+    lines.push(
+      "",
+      `## Nivel de QA — ${qaLevel}`,
+      "",
+      QA_LEVEL_GUIDE[qaLevel],
+      "",
+      `Niveles válidos: ${QA_LEVELS.join(" · ")} (default ${DEFAULT_QA_LEVEL}). Reporta la evidencia exigida por el nivel; si el contrato trae más trabajo del que el nivel permite evidenciar, dilo en el resumen.`,
+    )
   }
 
   lines.push(
