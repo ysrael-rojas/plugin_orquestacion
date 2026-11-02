@@ -13,8 +13,8 @@ Cómo se usa el plugin de orquestación en el día a día (v0.8.3).
 | **`aiapaec_run_abort`** | Cancela un run (interrumpe sesiones hijas; pendientes quedan `skipped`) |
 | **`/orquestar`** | Atajo: tu petición se convierte en plan de orquestación |
 | **`/aiapaec`** | Panel TUI: runs agrupados con objetivo y estado por tarea |
-| **`http://127.0.0.1:4780`** | Dashboard web local: run activo con progreso, tabla de tareas, tokens/costo y **feed de actividad en vivo** (últimas 8 acciones por tarea en curso + orquestador; refresco 2.5 s; `dashboardPort` configurable) |
-| **`docs/plans/<runId>.md`** | Documento de plan vivo con contexto, tareas y avance |
+| **`http://127.0.0.1:4780`** | Dashboard web local: **árbol de ejecución** del run activo (título corto por nodo, agente · modelo, progreso, sub-sesiones anidadas, feed de actividad en vivo; refresco 2.5 s; `dashboardPort` configurable) |
+| **`docs/plans/<runId>.md`** | Documento de plan vivo con contexto, título corto, tareas (columna **Título**) y avance |
 | **`gentle_engram_status`** | Diagnóstico de Engram (conectado / sin conexión / ausente) |
 
 ## Flujo
@@ -53,9 +53,10 @@ Con el agente **orquestador** (o `/orquestar`):
 - **Validación**: sin reporte JSON con `status`, la tarea queda `unconfirmed` (⚠️) y sus dependientes no corren.
 - **Niveles de QA**: cada tarea acepta `qaLevel` con tres profundidades —`L1` smoke (solo `pnpm test` con evidencia del comando), `L2` estándar (validación contra el spec con comando + salida y `archivo:línea` en las desviaciones) y `L3` forense (L2 + supuestos técnicos contrastados con fuentes reales, como los `.d.ts` del SDK)—. Default `L2`; un valor inválido cae a `L2` con aviso en la respuesta de `aiapaec_orchestrate`. La definición operativa llega en el prompt solo a las tareas de agente `qa`; el nivel efectivo aparece como `qa · L2` en `aiapaec_run_status` y como badge junto al agente en el dashboard.
 - **Recuperación**: el run vive en el storage (`runs/<runId>`); si la llamada se interrumpe, `run_status` recupera el estado.
-- **Documento de plan**: cada run escribe `docs/plans/<runId>.md` con contexto, tabla de tareas y avance; se actualiza por oleada y se marca `aborted` al cancelar.
-- **Dashboard en vivo**: `http://127.0.0.1:4780` (solo loopback, opción `dashboardPort`) muestra el run activo con progreso `X/Y`, la tabla de tareas (agente + badge de nivel de QA, estado, rama, tiempo, tokens/costo) y el historial plegado; se refresca cada 2.5 s. `aiapaec_orchestrate` y `aiapaec_run_status` incluyen la línea `Dashboard: http://127.0.0.1:<puerto>`. Si falla, la orquestación sigue igual: es best-effort.
-- **Feed de actividad**: el plugin escucha los eventos de sesión y guarda en RAM las últimas **8 acciones** de cada sesión registrada (la orquestadora y cada tarea hija), como `tool` + argumento principal truncado a 80 caracteres. Se ve bajo cada tarea ⏳ del dashboard (`hace 5s`), en la sección «Actividad del orquestador» y en la línea `última acción: <tool> → <summary> (hace Xs)` de `aiapaec_run_status`. Nunca guarda salidas completas, no se persiste y no puede romper el run: un evento fallido se ignora. El contrato `/api/state` está en **v3** (v2 añadió `activity`; v3 añade `qaLevel` por tarea).
+- **Documento de plan**: cada run escribe `docs/plans/<runId>.md` con contexto, título corto del run en el frontmatter, tabla de tareas (ID, agente, estado, rama, dependencias y **Título**) y avance; se actualiza por oleada y se marca `aborted` al cancelar.
+- **Títulos y modelos (árbol v4)**: cada run y cada tarea aceptan `title` (campo opcional del `TaskSpec` y del input de `aiapaec_orchestrate`); si falta, se usa la primera línea del `objective` truncada a 60 caracteres. Cada nodo muestra `agente · modelo`: el modelo **esperado** sale del `model` de la tarea o del que declara el agente en `opencode.json` (`agent.get`), y al cerrar se sustituye por el **real** que reporta el assistant; si el agente no declara modelo, se muestra `default`.
+- **Dashboard en vivo**: `http://127.0.0.1:4780` (solo loopback, opción `dashboardPort`) muestra el run activo como árbol: progreso `X/Y`, títulos cortos, `agente · modelo` por nodo, badge de nivel de QA, rama, tiempo, tokens/costo condicional, **sub-sesiones anidadas** y el historial plegado; se refresca cada 2.5 s. `aiapaec_orchestrate` y `aiapaec_run_status` incluyen la línea `Dashboard: http://127.0.0.1:<puerto>`. Si falla, la orquestación sigue igual: es best-effort.
+- **Feed de actividad (con cascada)**: el plugin escucha los eventos de sesión y guarda en RAM las últimas **8 acciones** de cada sesión registrada (la orquestadora y cada tarea hija), como `tool` + argumento principal truncado a 80 caracteres. Además, cuando llega `session.created` de una sesión cuya padre ya se observa, la **sub-sesión se registra sola** (rol `sub`) con su agente, modelo y título: el árbol muestra las sesiones que abre un subagente sin instrumentar nada más. Se ve bajo cada tarea ⏳ del dashboard (`hace 5s`), en la sección «Actividad del orquestador» y en la línea `última acción: <tool> → <summary> (hace Xs)` de `aiapaec_run_status`. Nunca guarda salidas completas, no se persiste y no puede romper el run: un evento fallido se ignora. El contrato `/api/state` está en **v4** (v3 añadió `qaLevel` por tarea; v4 añade `title`, `model`, `inFlight` como objetos y `subsessions` anidadas).
 - **Memoria**: las sesiones hijas llevan `parentID` (atribución al orquestador) y Engram guarda decisiones/hallazgos.
 
 ## Skills por tarea (`skills`)
@@ -106,6 +107,7 @@ su cuenta, las invoca el humano cuando el plan las anuncia.
 | Validar rápido un cambio trivial | `qa` con `qaLevel: "L1"` (solo `pnpm test`) |
 | Validación forense (APIs/eventos del SDK) | `qa` con `qaLevel: "L3"` (contrasta supuestos con los `.d.ts`) |
 | Forzar una disciplina (TDD, review) | Declarar `skills: ["tdd"]` en la tarea (ver «Skills por tarea») |
+| Nombres cortos en el árbol | Declarar `title` en el run y en cada tarea |
 | Preparar PR | `deployer` con `push_to_remote: true` (gate de permiso) y `human_approval_required` |
 | Cancelar algo en curso | `aiapaec_run_abort` con el `runId` |
 | Ver historial | `aiapaec_run_status` sin argumentos, o `/aiapaec` en el TUI |
