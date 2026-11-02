@@ -25,7 +25,14 @@ export type DisplayStatus = RunRecord["status"] | TaskStatus | "pending"
 /** Tono visual; el color nunca es la única señal (siempre va glifo + texto). */
 export type DisplayTone = "run" | "ok" | "failed" | "skipped" | "warn" | "aborted" | "pending"
 
-/** Nodo de sub-sesión del árbol (sesiones nietas: subagentes de un subagente). */
+/**
+ * Nodo de sub-sesión del árbol (sesiones nietas: subagentes de un subagente).
+ *
+ * Es la **única** definición del nodo: `/api/state` la importa de aquí. La
+ * cascada canónica vive en `children` (lo que pinta el HTML, tanto en el
+ * servidor como en el refresco del cliente) y `subsessions` la publica como
+ * alias con el nombre del contrato v4.
+ */
 export interface DashboardSessionNode {
   /** ID de la sesión (o el que reporte el runtime). */
   id: string
@@ -39,8 +46,19 @@ export interface DashboardSessionNode {
   glyph: string
   statusText: string
   tone: DisplayTone
+  /** Rol del nodo en el run ("orchestrator", "task", "sub"), si se conoce. */
+  role?: string
+  /** Tarea dueña del nodo, si el runtime lo reportó. */
+  taskId?: string
+  /**
+   * Últimas acciones de la sesión. Solo `/api/state` la rellena: la vista lee
+   * la actividad de su propia fuente y no necesita duplicarla.
+   */
+  activity?: DashboardActivityRow[]
   /** Sub-sesiones anidadas (cascada por `parentID`). */
   children: DashboardSessionNode[]
+  /** Alias de `children` con el nombre que usa el contrato `/api/state` v4. */
+  subsessions?: DashboardSessionNode[]
 }
 
 export interface DashboardTaskRow {
@@ -726,7 +744,7 @@ function taskStatusMeta(status: TaskStatus): { glyph: string; text: string; tone
 }
 
 /** Estado de una sub-sesión: el runtime usa valores heterogéneos ("idle", "busy"...). */
-function sessionStatusMeta(status: string): {
+export function sessionStatusMeta(status: string): {
   status: DisplayStatus
   glyph: string
   text: string

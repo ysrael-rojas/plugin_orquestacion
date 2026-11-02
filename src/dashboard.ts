@@ -26,10 +26,13 @@ import {
 } from "./activity"
 import { renderDashboardHtml } from "./dashboard-html"
 import {
+  DASHBOARD_STATE_VERSION,
   buildDashboardView,
+  sessionStatusMeta,
   type DashboardActivityRow,
   type DashboardOrchestratorView,
   type DashboardRunView,
+  type DashboardSessionNode,
   type DashboardState,
   type DashboardTaskRow,
 } from "./dashboard-view"
@@ -48,10 +51,11 @@ export const DASHBOARD_SERVICE = "aiapaec-dashboard"
  * Versión del contrato de `/api/state`.
  *
  * v4 (árbol de ejecución): `title` por run y por tarea, `model` por nodo,
- * `inFlight` como objetos y `subsessions` anidadas por sesión. El view-model v3
- * (`dashboard-view.ts`) conserva su propia versión hasta que la vista lo adopte.
+ * `inFlight` como objetos y `subsessions` anidadas por sesión. La constante
+ * vive en el view-model (`dashboard-view.ts`) para que la vista y el servidor
+ * no puedan desincronizarse; aquí solo se reexporta.
  */
-export const DASHBOARD_STATE_VERSION = 4
+export { DASHBOARD_STATE_VERSION }
 
 /** Profundidad máxima del árbol de sub-sesiones (evita ciclos en eventos raros). */
 export const MAX_SESSION_DEPTH = 6
@@ -64,18 +68,6 @@ export interface DashboardInFlightNode {
   branch?: string
   startedAt?: string
   title?: string
-}
-
-/** Sub-sesión anidada: agente, modelo, título y su propia actividad. */
-export interface DashboardSessionNode {
-  id: string
-  title: string
-  agent: string
-  model: string
-  role: string
-  taskId?: string
-  activity: DashboardActivityRow[]
-  subsessions: DashboardSessionNode[]
 }
 
 /** Nodo de tarea: la fila v3 más los campos del árbol. */
@@ -415,7 +407,7 @@ function decorateRun(
               title: orchestratorSession.title,
             }
           : {}),
-        subsessions: orchestratorSession ? sessionNodes(orchestratorSession, sessions, now) : [],
+        subsessions: feedSubsessions(orchestratorSession, sessions, now, view.orchestrator.subsessions),
       }
     : undefined
 
@@ -452,7 +444,7 @@ function decorateTask(
       : {}),
     title: inFlightEntry?.title || result?.title || row.taskId,
     model: inFlightEntry?.model ?? result?.model ?? DEFAULT_MODEL_LABEL,
-    subsessions: taskSession ? sessionNodes(taskSession, sessions, now) : [],
+    subsessions: feedSubsessions(taskSession, sessions, now, row.subsessions),
   }
 }
 
@@ -483,7 +475,7 @@ function pendingTask(
     ...(running
       ? { activity: toActivityRows(safeActivity(() => feed.activityForTask(record.runId, entry.taskId)), now) }
       : {}),
-    subsessions: taskSession ? sessionNodes(taskSession, sessions, now) : [],
+    subsessions: feedSubsessions(taskSession, sessions, now),
   }
 }
 
@@ -498,6 +490,22 @@ function toInFlightNode(entry: InFlightTask): DashboardInFlightNode {
   }
 }
 
+/**
+ * Sub-sesiones publicadas por `/api/state`: manda el feed en RAM (es la fuente
+ * viva, con actividad) y, si no conoce la sesión, se conserva el árbol que ya
+ * armó la vista desde `record.sessions`.
+ */
+function feedSubsessions(
+  parent: SessionSummary | undefined,
+  sessions: readonly SessionSummary[],
+  now: Date,
+  fallback?: readonly DashboardSessionNode[],
+): DashboardSessionNode[] {
+  const fromFeed = parent ? sessionNodes(parent, sessions, now) : []
+  if (fromFeed.length > 0) return fromFeed
+  return fallback ? [...fallback] : []
+}
+
 /** Sub-sesiones de una sesión, anidadas (los eventos raros no pueden ciclar). */
 function sessionNodes(
   parent: SessionSummary,
@@ -509,16 +517,29 @@ function sessionNodes(
 
   return sessions
     .filter((session) => session.parentID === parent.id)
-    .map((session) => ({
-      id: session.id,
-      title: session.title || session.label || session.taskId || session.id,
-      agent: session.agent ?? "—",
-      model: session.model ?? DEFAULT_MODEL_LABEL,
-      role: session.role ?? "sub",
-      ...(session.taskId ? { taskId: session.taskId } : {}),
-      activity: toActivityRows(session.activity, now),
-      subsessions: sessionNodes(session, sessions, now, depth + 1),
-    }))
+    .map((session) => {
+      // El feed en RAM no reporta estado de sesión: el nodo queda "pendiente"
+      // (glifo neutro, sin spinner falso) hasta que el runtime lo publique.
+      const meta = sessionStatusMeta("")
+      const children = sessionNodes(session, sessions, now, depth + 1)
+      return {
+        id: session.id,
+        title: session.title || session.label || session.taskId || session.id,
+        agent: session.agent ?? "—",
+        model: session.model ?? DEFAULT_MODEL_LABEL,
+        role: session.role ?? "sub",
+        ...(session.taskId ? { taskId: session.taskId } : {}),
+        status: meta.status,
+        glyph: meta.glyph,
+        statusText: meta.text,
+        tone: meta.tone,
+        activity: toActivityRows(session.activity, now),
+        children,
+        // El contrato v4 publica la cascada como `subsessions`; el HTML la pinta
+        // como `children`. Es la misma lista: un solo árbol, dos nombres.
+        subsessions: children,
+      }
+    })
 }
 
 function safeSessions(feed: ActivityFeed, runId: string): readonly SessionSummary[] {
