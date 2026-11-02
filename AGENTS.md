@@ -31,6 +31,7 @@ Plugin TypeScript ESM para OpenCode V2 (arquitectura "Aiapaec"). OpenCode carga 
 - `scripts/smoke.ts` prueba con un `PluginCtx` mockeado (sin red). Si cambias el uso de la API, valida las formas contra `~/.config/opencode/node_modules/@opencode/plugin`.
 - **Feed de actividad en vivo**: `src/activity.ts` (`ActivityFeed`) se suscribe best-effort a `ctx.event.subscribe()` (`V2Event`: `session.tool.input.started` da el nombre del tool y `session.tool.called` el `input`). `register(sessionID, label, { runId, taskId, role, agent, model, title, parentID })` / `unregister` / `unregisterRun` los llaman las tools (`RunControl`): el orquestador al iniciar el run y cada hija en `onTaskStart` (el runner expone `sessionID`, `agent`, `model` esperado, `title` y `startedAt` en ese callback). **Cascada**: al llegar un `session.created` cuyo `parentID` ya está observado, la hija se registra sola con rol `sub` heredando run/tarea/agente y tomando modelo y título del evento (`metadata.title` del runner manda sobre el título de la sesión); el registro nunca degrada un rol ni pisa el título existente. Guarda un ring buffer **en RAM de 8** `{ tool, summary, at }` por sesión con el primer argumento relevante truncado a **80** caracteres (nunca salidas completas) y se vacía al cerrar tarea/run. `getActivity`/`getLast`/`activityForTask`/`orchestratorActivity` alimentan el dashboard y la línea `última acción: <tool> → <summary> (hace Xs)` de `aiapaec_run_status`; `sessionInfo`/`sessionsForRun`/`childrenOf` (con la actividad propia de cada sesión) alimentan el árbol v4. Un evento roto no corta el bucle y las sesiones no registradas (sin padre observado) se ignoran.
 - **Niveles de QA (`qaLevel`)**: `TaskSpec.qaLevel` (`"L1" | "L2" | "L3"`, default `L2`) declara la profundidad de la validación de las tareas `qa`: `L1` smoke (solo `pnpm test` con evidencia del comando), `L2` estándar (validación contra el spec del contrato con evidencia: comando + salida y `archivo:línea` en desviaciones) y `L3` forense (L2 + supuestos técnicos contrastados con fuentes reales, p. ej. los `.d.ts` del SDK). `normalizeQaLevels` y `resolveQaLevel` viven en `src/contracts.ts`: un valor inválido **no aborta el plan**, cae a `L2` con aviso en la respuesta de `aiapaec_orchestrate` (`metadata.qaLevelWarnings`). `buildTaskPrompt` inyecta la definición operativa solo en tareas de agente `qa`. El runner no resuelve el nivel: la tool adjunta `TaskResult.qaLevel` (helper `withQaLevels` en `src/tools.ts`) antes de persistir, así que se ve como sufijo `qa · L2` en `aiapaec_run_status` y como badge `L2` junto al agente en el dashboard. `/api/state` sube a **v4** (el `qaLevel` por tarea entró en v3; v4 añade el árbol: `title`, `model`, `inFlight` objetos y `subsessions`).
+- **Perfiles de modelos (`modelProfiles` / `modelProfile`)**: un perfil es `Record<agente, modelo>` (`orquestador`, `contexto`, `explorador`, `coder`, `qa`, `deployer`), con cada modelo en formato `providerID/modelID`. `BUILT_IN_MODEL_PROFILES`, `resolveModelProfiles`, `normalizeModelProfiles`, `profileModel` y `splitModelRef` viven en `src/types.ts` (puro, sin ciclos con `index.ts`); el setup fusiona built-in + usuario (`resolveModelProfiles`: mismo nombre → sobrescribe **agente a agente**, nombres nuevos → se añaden) y valida la opción `modelProfile` (si no existe, `console.warn` y se ignora). En `aiapaec_orchestrate`, el `modelProfile` del run manda sobre el default y un perfil inexistente **no aborta**: se avisa en la respuesta (`## ⚠️ Avisos de \`modelProfile\``, `metadata.modelProfileWarnings`) y el run sigue sin perfil. Precedencia del modelo por tarea: `task.model` > `perfil[agente]` > modelo del agente en `opencode.json`. El perfil efectivo se persiste en `RunRecord.modelProfile`, se muestra como `**Perfil:** <nombre>` en `aiapaec_run_status` (y en la respuesta de `orchestrate`) y va en el frontmatter del plan (`modelProfile: <nombre>`). El modelo del **orquestador** del perfil por defecto se aplica vía `ctx.agent.transform` (mock del `AgentEditor`: `list/get/update`), best-effort y solo para sesiones nuevas; su `dispose` va en el cleanup del setup.
 
 ## Quirks de la API V2 (fáciles de romper)
 
@@ -57,6 +58,27 @@ Plugin TypeScript ESM para OpenCode V2 (arquitectura "Aiapaec"). OpenCode carga 
 
 ## Configuración del plugin
 
-- Opciones: `baseBranch` (default `dev`), `cleanupSessions` (default `false`), `skills` (default `true`).
+- Opciones: `baseBranch` (default `dev`), `cleanupSessions` (default `false`), `skills` (default `true`), `modelProfiles` y `modelProfile`.
 - `skills: false` desactiva el registro automático de skills del catálogo `.agents/skills/`.
+- **Perfiles de modelos**: `modelProfiles` define perfiles propios (`Record<perfil, Record<agente, modelo>>`) que se fusionan con los built-in `high`, `balanced`, `low` y `free` (un perfil con el mismo nombre sobrescribe agente a agente). `modelProfile` elige el default del plugin; el run puede sobreescribirlo con el parámetro `modelProfile` de `aiapaec_orchestrate`. Sin `modelProfile`, no hay perfil y cada agente usa su modelo de `opencode.json`. El default fija además el modelo del `orquestador` vía `ctx.agent.transform`.
 - Se carga desde `opencode.json` global: `plugins: ["C:/dev/plugin_orquestacion"]` + bloque `agents`.
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "C:/dev/plugin_orquestacion",
+      "options": {
+        "baseBranch": "dev",
+        "modelProfile": "balanced",
+        "modelProfiles": {
+          // Sobrescribe el built-in "balanced" para coder y qa.
+          "balanced": { "coder": "opencode-go/kimi-k3.1-pro", "qa": "opencode-go/glm-5.3" },
+          // Perfil propio, seleccionable por run con modelProfile: "barato".
+          "barato": { "orquestador": "opencode-go/glm-5.3-flash", "coder": "opencode-go/mimo-v2.6-flash" }
+        }
+      }
+    }
+  ]
+}
+```

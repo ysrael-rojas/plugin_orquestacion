@@ -94,7 +94,54 @@ su cuenta, las invoca el humano cuando el plan las anuncia.
 
 1. **Merge**: el plugin nunca mergea a `dev` ni toca `main`; el deployer prepara el PR y pide aprobación.
 2. **`mem_save` falla con "authoritative session"**: `opencode service restart` y sesión nueva (ver `docs/incidencias.md`).
-3. **Opciones**: `baseBranch` (dev), `taskTimeoutMs`, `runHistory` (50), `cleanupSessions`, `cleanupWorktrees`, `worktreeParent`, `dashboardPort` (4780; `0` desactiva el dashboard).
+3. **Opciones**: `baseBranch` (dev), `taskTimeoutMs`, `runHistory` (50), `cleanupSessions`, `cleanupWorktrees`, `worktreeParent`, `dashboardPort` (4780; `0` desactiva el dashboard), `modelProfiles` y `modelProfile` (ver «Perfiles de modelos»).
+
+## Perfiles de modelos
+
+Un **perfil** es una tabla `agente → modelo` (`orquestador`, `contexto`, `explorador`, `coder`, `qa`,
+`deployer`); cada modelo se escribe como `providerID/modelID`. Trae cuatro perfiles built-in que se
+pueden usar tal cual:
+
+| Perfil | Orquestador | Coder | `qa` / `explorador` / `contexto` | Deployer |
+|---|---|---|---|---|
+| `high` | `gemini-4-argon` | `kimi-k3.1-pro` | `glm-5.3` | `deepseek-v4-pro` |
+| `balanced` | `glm-5.3` | `kimi-k2.7-code` | `glm-5.3-flash` | `deepseek-v4.1-flash` |
+| `low` | `glm-5.3-flash` | `deepseek-v4.1-flash` | `mimo-v2.6-flash` | `mimo-v2.6-flash` |
+| `free` | `beam-free` | `beam-free` | `beam-free` | `beam-free` |
+
+(Todos con prefijo `opencode-go/`.) Cómo se eligen:
+
+1. **Default del plugin**: opción `modelProfile` en `opencode.json`. Si no existe ese perfil, se
+   ignora con un warning y cada agente usa su modelo declarado.
+2. **Por run**: el parámetro `modelProfile` de `aiapaec_orchestrate` manda sobre el default.
+3. **Por tarea**: el `model` de una tarea manda sobre el perfil (`task.model` > perfil > agente).
+
+Un perfil inexistente **nunca aborta el run**: la respuesta trae una sección «Avisos de
+`modelProfile`» y el run corre sin perfil. El perfil efectivo se ve como `**Perfil:** balanced` en
+`aiapaec_run_status`, queda en el frontmatter del plan (`modelProfile: balanced`) y el modelo del
+**orquestador** del perfil por defecto se aplica vía `ctx.agent.transform` (solo sesiones nuevas).
+
+Configuración típica en `opencode.json` (se fusiona con los built-in; un perfil con el mismo nombre
+se sobrescribe agente a agente):
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "C:/dev/plugin_orquestacion",
+      "options": {
+        "modelProfile": "balanced",
+        "modelProfiles": {
+          "balanced": { "coder": "opencode-go/kimi-k3.1-pro" },   // solo cambia el coder
+          "barato":   { "coder": "opencode-go/mimo-v2.6-flash" }  // perfil propio
+        }
+      }
+    }
+  ]
+}
+```
+
+Y para un run concreto: `aiapaec_orchestrate` con `modelProfile: "barato"`.
 
 ## Recetario rápido
 
