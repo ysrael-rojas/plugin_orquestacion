@@ -1,10 +1,20 @@
 import assert from "node:assert/strict"
 import fs from "node:fs"
+import { createServer } from "node:http"
 import os from "node:os"
 import path from "node:path"
 import { test } from "node:test"
 
 import { buildTaskPrompt, extractReport } from "../src/contracts"
+import {
+  activeDashboard,
+  DEFAULT_DASHBOARD_PORT,
+  DASHBOARD_STATE_VERSION,
+  normalizeDashboardPort,
+  startDashboard,
+} from "../src/dashboard"
+import { DASHBOARD_REFRESH_MS, renderDashboardHtml } from "../src/dashboard-html"
+import { buildDashboardView, escapeHtml } from "../src/dashboard-view"
 import { detectEngram } from "../src/engram"
 import { getRun, pruneRuns, recentRuns, saveRun } from "../src/history"
 import { buildSessionPermissions } from "../src/permissions"
@@ -13,7 +23,7 @@ import { runOrchestration, planWaves } from "../src/runner"
 import plugin from "../src/index"
 import { registerTools } from "../src/tools"
 import { registerSkills } from "../src/skills"
-import type { PluginCtx, TaskSpec } from "../src/types"
+import type { PluginCtx, RunRecord, TaskSpec } from "../src/types"
 
 function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string[] } = {}): PluginCtx {
   let counter = 0
@@ -894,6 +904,8 @@ test("skills: degradación graceful cuando ctx.skill no existe", async () => {
   const warnings: string[] = []
 
   const ctx = makeCtx()
+  // Puerto 0: la prueba no debe abrir el dashboard real en 4780.
+  ctx.options = { dashboardPort: 0 }
   ctx.command.transform = async (callback: any) => {
     callback({ add: (command: any) => commands.push(command) })
     return { dispose: async () => {} }
@@ -926,6 +938,7 @@ test("skills: degradación graceful cuando ctx.skill no existe", async () => {
     warnings.some((warning) => warning.includes("ctx.skill.transform no está disponible")),
     "debe advertir la degradación cuando ctx.skill falta",
   )
+  await (dispose as () => Promise<void>)()
 })
 
 async function waitForFile(filePath: string, timeoutMs = 1000) {
@@ -1186,4 +1199,316 @@ test("plandocs: desactivado no escribe nada", async () => {
   } finally {
     cleanupDir(tmpDir)
   }
+})
+
+// ---------------------------------------------------------------------------
+// Dashboard web local en vivo
+// ---------------------------------------------------------------------------
+
+function dashboardRuns(): RunRecord[] {
+  return [
+    {
+      runId: "RUN-LIVE",
+      objective: "objetivo <live>",
+      baseBranch: "dev",
+      startedAt: "2024-01-01T00:00:00.000Z",
+      status: "running",
+      totalTasks: 3,
+      inFlight: ["T3"],
+      results: [
+        {
+          taskId: "T1",
+          agent: "coder",
+          status: "succeeded",
+          branch: "feat/T1",
+          latencyMs: 1500,
+          tokens: { input: 10, output: 5 },
+          cost: 0.0012,
+          summary: "ok",
+        },
+        { taskId: "T2", agent: "qa", status: "failed", latencyMs: 250, error: "boom" },
+      ],
+    },
+    {
+      runId: "RUN-OLD",
+      objective: "viejo",
+      baseBranch: "dev",
+      startedAt: "2023-12-31T00:00:00.000Z",
+      finishedAt: "2023-12-31T00:00:05.000Z",
+      status: "completed",
+      totalTasks: 1,
+      results: [{ taskId: "T0", agent: "explorador", status: "succeeded", latencyMs: 500 }],
+    },
+  ]
+}
+
+test("dashboard: view-model calcula progreso, historial y filas por tarea", () => {
+  const view = buildDashboardView(dashboardRuns(), new Date("2024-01-01T00:00:10.000Z"))
+
+  assert.equal(view.version, DASHBOARD_STATE_VERSION)
+  assert.equal(view.active?.runId, "RUN-LIVE")
+  assert.equal(view.active?.progressLabel, "2/3")
+  assert.equal(view.active?.progressDone, 2)
+  assert.equal(view.active?.progressTotal, 3)
+  assert.equal(view.active?.duration, "10.0s")
+  assert.equal(view.active?.tasks.length, 3, "dos cerradas + la que está en vuelo")
+
+  const done = view.active!.tasks[0]!
+  assert.equal(done.status, "succeeded")
+  assert.equal(done.glyph, "✅")
+  assert.match(done.statusText, /completada/)
+  assert.equal(done.time, "1.5s")
+  assert.match(done.tokens!, /15/)
+  assert.match(done.cost!, /\$0\.0012/)
+  assert.equal(done.branch, "feat/T1")
+
+  const failed = view.active!.tasks[1]!
+  assert.equal(failed.glyph, "❌")
+  assert.match(failed.statusText, /falló/)
+
+  const running = view.active!.tasks[2]!
+  assert.equal(running.taskId, "T3")
+  assert.equal(running.status, "running")
+  assert.equal(running.isRunning, true)
+  assert.match(running.statusText, /en curso/)
+
+  assert.equal(view.history.length, 1, "el run activo no se repite en el historial")
+  assert.equal(view.history[0]!.runId, "RUN-OLD")
+  assert.equal(view.history[0]!.progressLabel, "1/1")
+  assert.equal(view.history[0]!.isActive, false)
+  assert.equal(view.showTokens, true)
+  assert.equal(view.totals.runs, 2)
+  assert.equal(view.totals.tasks, 4)
+})
+
+test("dashboard: la columna tokens/costo solo aparece si hay datos", () => {
+  const sinTokens: RunRecord[] = [
+    {
+      runId: "RUN-PLAIN",
+      objective: "sin telemetría",
+      baseBranch: "dev",
+      startedAt: "2024-01-01T00:00:00.000Z",
+      status: "completed",
+      totalTasks: 1,
+      results: [{ taskId: "P1", agent: "contexto", status: "succeeded", latencyMs: 800 }],
+    },
+  ]
+
+  const view = buildDashboardView(sinTokens)
+  assert.equal(view.showTokens, false)
+  assert.equal(view.active, null)
+  assert.equal(view.history.length, 1)
+  assert.equal(view.history[0]!.tasks[0]!.tokens, undefined)
+  assert.equal(view.history[0]!.tasks[0]!.cost, undefined)
+
+  const html = renderDashboardHtml(view)
+  assert.ok(!html.includes("<th>Tokens / costo</th>"), "sin datos no debe existir la columna")
+  assert.match(html, /<details class="run-card/, "el historial va plegado en details")
+
+  const conTokens = renderDashboardHtml(buildDashboardView(dashboardRuns()))
+  assert.ok(conTokens.includes("<th>Tokens / costo</th>"), "con datos sí se muestra la columna")
+})
+
+test("dashboard: escapeHtml neutraliza HTML y comillas", () => {
+  assert.equal(
+    escapeHtml('<b class="x">Tom & "Jerry"</b>'),
+    "&lt;b class=&quot;x&quot;&gt;Tom &amp; &quot;Jerry&quot;&lt;/b&gt;",
+  )
+  assert.equal(escapeHtml("O'Brien"), "O&#39;Brien")
+  assert.equal(escapeHtml(undefined), "")
+})
+
+test("dashboard: la página incluye spinner accesible, polling y texto escapado", () => {
+  const runs = dashboardRuns()
+  runs[0]!.objective = '<script>alert("x")</script>'
+  const html = renderDashboardHtml(buildDashboardView(runs), { refreshMs: DASHBOARD_REFRESH_MS })
+
+  assert.ok(!html.includes('<script>alert("x")</script>'), "el objetivo debe ir escapado")
+  assert.match(html, /&lt;script&gt;alert\(&quot;x&quot;\)&lt;\/script&gt;/)
+  assert.match(html, /class="spinner pulse"/, "la tarea en curso usa la clase pulse")
+  assert.match(html, /\.pulse \{ animation: pulse 2s/, "el spinner anima en 2s")
+  assert.match(html, /@media \(prefers-reduced-motion: reduce\)/)
+  assert.match(html, /REFRESH = 2500/)
+  assert.match(html, /setInterval\(refresh, REFRESH\)/)
+  assert.match(html, /fetch\("\/api\/state"/)
+  assert.match(html, /role="progressbar"/)
+
+  const script = html.slice(html.indexOf("<script>") + "<script>".length, html.lastIndexOf("</script>"))
+  assert.ok(script.includes("refresh()"), "el script embebido debe arrancar el polling")
+  assert.doesNotThrow(() => new Function(script), "el JS embebido debe ser sintácticamente válido")
+})
+
+test("dashboard: normalización de dashboardPort (0 off, inválido a 4780)", () => {
+  assert.equal(normalizeDashboardPort(undefined).port, DEFAULT_DASHBOARD_PORT)
+  assert.equal(DEFAULT_DASHBOARD_PORT, 4780)
+  assert.equal(normalizeDashboardPort(4781).port, 4781)
+  assert.equal(normalizeDashboardPort(0).port, 0)
+  assert.equal(normalizeDashboardPort(65535).port, 65535)
+
+  for (const invalid of [-1, 1.5, 70000, "4780", true, {}]) {
+    const result = normalizeDashboardPort(invalid)
+    assert.equal(result.port, DEFAULT_DASHBOARD_PORT, `${String(invalid)} debe caer al default`)
+    assert.ok(result.warning, `${String(invalid)} debe advertir del valor inválido`)
+    assert.match(result.warning!, /dashboardPort/)
+  }
+})
+
+test("dashboard: /api/health y /api/state responden desde un puerto efímero", async () => {
+  const ctx = makeCtx()
+  await saveRun(ctx, {
+    runId: "RUN-DASH-1",
+    objective: "objetivo del dashboard",
+    baseBranch: "dev",
+    startedAt: new Date().toISOString(),
+    status: "running",
+    totalTasks: 1,
+    inFlight: ["D1"],
+    results: [],
+  })
+
+  const handle = await startDashboard(ctx, 0)
+  assert.ok(handle, "el dashboard debe arrancar")
+  try {
+    assert.equal(handle!.host, "127.0.0.1")
+    assert.ok(handle!.port > 0)
+    assert.equal(handle!.url, `http://127.0.0.1:${handle!.port}`)
+    assert.equal(activeDashboard(), handle, "debe ser singleton")
+
+    const sameHandle = await startDashboard(ctx, 0)
+    assert.equal(sameHandle, handle, "un segundo arranque reutiliza el servidor vivo")
+
+    const healthResponse = await fetch(`${handle!.url}/api/health`)
+    assert.equal(healthResponse.status, 200)
+    const health: any = await healthResponse.json()
+    assert.equal(health.ok, true)
+    assert.equal(health.service, "aiapaec-dashboard")
+    assert.equal(health.version, DASHBOARD_STATE_VERSION)
+    assert.equal(health.runId, "RUN-DASH-1")
+
+    const stateResponse = await fetch(`${handle!.url}/api/state`)
+    assert.equal(stateResponse.status, 200)
+    assert.match(stateResponse.headers.get("cache-control") ?? "", /no-store/)
+    const state: any = await stateResponse.json()
+    assert.equal(state.version, DASHBOARD_STATE_VERSION)
+    assert.equal(state.active.runId, "RUN-DASH-1")
+    assert.equal(state.active.progressLabel, "0/1")
+    assert.equal(state.active.tasks[0].isRunning, true)
+
+    const pageResponse = await fetch(`${handle!.url}/`)
+    assert.equal(pageResponse.status, 200)
+    assert.match(pageResponse.headers.get("content-type") ?? "", /text\/html/)
+    const page = await pageResponse.text()
+    assert.match(page, /Aiapaec · orquestaciones en vivo/)
+    assert.match(page, /127\.0\.0\.1/)
+
+    const missing = await fetch(`${handle!.url}/api/nope`)
+    assert.equal(missing.status, 404)
+  } finally {
+    await handle!.close()
+  }
+
+  assert.equal(activeDashboard(), undefined, "close() libera el singleton")
+})
+
+test("dashboard: puerto ocupado — cede ante instancia viva y desactiva si es ajena", async () => {
+  const warnings: string[] = []
+  const originalWarn = console.warn
+  console.warn = (...args: any[]) => {
+    warnings.push(args.join(" "))
+  }
+
+  const live = createServer((request, response) => {
+    if (request.url === "/api/health") {
+      response.writeHead(200, { "content-type": "application/json" })
+      response.end(JSON.stringify({ ok: true, service: "aiapaec-dashboard", version: 1 }))
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  await new Promise<void>((resolve) => live.listen(0, "127.0.0.1", () => resolve()))
+  const livePort = (live.address() as any).port
+
+  let ceded: Awaited<ReturnType<typeof startDashboard>>
+  try {
+    ceded = await startDashboard(makeCtx(), livePort)
+  } finally {
+    await new Promise<void>((resolve) => live.close(() => resolve()))
+  }
+
+  assert.equal(ceded, undefined, "con otra instancia viva no se arranca un segundo servidor")
+  assert.ok(
+    warnings.some((warning) => /instancia viva/.test(warning)),
+    "debe avisar que cede el puerto",
+  )
+
+  const foreign = createServer((_request, response) => {
+    response.writeHead(500)
+    response.end("boom")
+  })
+  await new Promise<void>((resolve) => foreign.listen(0, "127.0.0.1", () => resolve()))
+  const foreignPort = (foreign.address() as any).port
+
+  let orphan: Awaited<ReturnType<typeof startDashboard>>
+  try {
+    orphan = await startDashboard(makeCtx(), foreignPort)
+  } finally {
+    console.warn = originalWarn
+    await new Promise<void>((resolve) => foreign.close(() => resolve()))
+  }
+
+  assert.equal(orphan, undefined, "si el ocupante no es el dashboard, se reintenta y se desactiva")
+  assert.ok(
+    warnings.some((warning) => /reintent/i.test(warning)),
+    "debe avisar del reintento ante un ocupante ajeno",
+  )
+  assert.equal(activeDashboard(), undefined)
+})
+
+test("dashboard: dashboardPort 0 no inicia el servidor en setup", async () => {
+  const ctx = makeCtx()
+  ctx.options = { dashboardPort: 0 }
+  const setup = (plugin as { setup: (context: PluginCtx) => Promise<() => Promise<void>> }).setup
+
+  const dispose = await setup(ctx)
+  try {
+    assert.equal(activeDashboard(), undefined, "con dashboardPort 0 no debe abrirse ningún puerto")
+  } finally {
+    await dispose()
+  }
+})
+
+test("dashboard: orchestrate y run_status muestran la URL del dashboard", async () => {
+  const { ctx, tools } = makeToolCtx()
+  await registerTools(ctx, {
+    ...TOOL_SETTINGS,
+    dashboard: { port: DEFAULT_DASHBOARD_PORT, url: `http://127.0.0.1:${DEFAULT_DASHBOARD_PORT}` },
+  })
+  const orchestrate = tools.get("orchestrate")!
+  const runStatus = tools.get("run_status")!
+
+  const started = await orchestrate.execute(
+    { objective: "dash", runId: "RUN-DASH-TOOL", tasks: [{ id: "D1", agent: "contexto", objective: "x" }] },
+    { sessionID: "ses_orq" },
+  )
+  const expected = `Dashboard: http://127.0.0.1:${DEFAULT_DASHBOARD_PORT}`
+  assert.ok(String(started.content).includes(expected), "orchestrate anuncia la URL")
+  assert.equal(started.metadata.dashboard, `http://127.0.0.1:${DEFAULT_DASHBOARD_PORT}`)
+
+  await waitForRun(ctx, "RUN-DASH-TOOL")
+
+  const status = await runStatus.execute({ runId: "RUN-DASH-TOOL" })
+  assert.ok(String(status.content).includes(expected), "run_status de un run muestra la URL")
+
+  const list = await runStatus.execute({})
+  assert.ok(String(list.content).includes(expected), "run_status de la lista muestra la URL")
+
+  const offline = makeToolCtx()
+  await registerTools(offline.ctx, TOOL_SETTINGS)
+  const response = await offline.tools.get("orchestrate")!.execute(
+    { objective: "sin dash", runId: "RUN-NODASH", tasks: [{ id: "N1", agent: "contexto", objective: "x" }] },
+    { sessionID: "ses_orq" },
+  )
+  assert.ok(!String(response.content).includes("Dashboard:"), "sin dashboard no se anuncia URL")
+  await waitForRun(offline.ctx, "RUN-NODASH")
 })

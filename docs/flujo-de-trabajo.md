@@ -13,6 +13,7 @@ Cómo se usa el plugin de orquestación en el día a día (v0.8.3).
 | **`aiapaec_run_abort`** | Cancela un run (interrumpe sesiones hijas; pendientes quedan `skipped`) |
 | **`/orquestar`** | Atajo: tu petición se convierte en plan de orquestación |
 | **`/aiapaec`** | Panel TUI: runs agrupados con objetivo y estado por tarea |
+| **`http://127.0.0.1:4780`** | Dashboard web local: run activo con progreso, tabla de tareas y tokens/costo (refresco 2.5 s; `dashboardPort` configurable) |
 | **`docs/plans/<runId>.md`** | Documento de plan vivo con contexto, tareas y avance |
 | **`gentle_engram_status`** | Diagnóstico de Engram (conectado / sin conexión / ausente) |
 
@@ -52,13 +53,14 @@ Con el agente **orquestador** (o `/orquestar`):
 - **Validación**: sin reporte JSON con `status`, la tarea queda `unconfirmed` (⚠️) y sus dependientes no corren.
 - **Recuperación**: el run vive en el storage (`runs/<runId>`); si la llamada se interrumpe, `run_status` recupera el estado.
 - **Documento de plan**: cada run escribe `docs/plans/<runId>.md` con contexto, tabla de tareas y avance; se actualiza por oleada y se marca `aborted` al cancelar.
+- **Dashboard en vivo**: `http://127.0.0.1:4780` (solo loopback, opción `dashboardPort`) muestra el run activo con progreso `X/Y`, la tabla de tareas (agente, estado, rama, tiempo, tokens/costo) y el historial plegado; se refresca cada 2.5 s. `aiapaec_orchestrate` y `aiapaec_run_status` incluyen la línea `Dashboard: http://127.0.0.1:<puerto>`. Si falla, la orquestación sigue igual: es best-effort.
 - **Memoria**: las sesiones hijas llevan `parentID` (atribución al orquestador) y Engram guarda decisiones/hallazgos.
 
 ## Reglas de operación
 
 1. **Merge**: el plugin nunca mergea a `dev` ni toca `main`; el deployer prepara el PR y pide aprobación.
 2. **`mem_save` falla con "authoritative session"**: `opencode service restart` y sesión nueva (ver `docs/incidencias.md`).
-3. **Opciones**: `baseBranch` (dev), `taskTimeoutMs`, `runHistory` (50), `cleanupSessions`, `cleanupWorktrees`, `worktreeParent`.
+3. **Opciones**: `baseBranch` (dev), `taskTimeoutMs`, `runHistory` (50), `cleanupSessions`, `cleanupWorktrees`, `worktreeParent`, `dashboardPort` (4780; `0` desactiva el dashboard).
 
 ## Recetario rápido
 

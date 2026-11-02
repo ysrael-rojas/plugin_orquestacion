@@ -240,6 +240,7 @@ Si el subagente no devuelve un reporte JSON con `status`, la tarea queda en esta
 | `runHistory` | `50` | Cuántos runs se conservan en el historial. Si el valor es inválido (no entero o ≤ 0) se usa `50`. |
 | `skills` | `true` | Si es `false`, desactiva el registro automático de skills desde `.agents/skills/`. |
 | `planDocs` | `true` | Si es `false`, desactiva el documento de plan; si es un string, cambia la carpeta destino relativa al repo. Se sanitiza: rechaza rutas absolutas, `..` y valores vacíos. |
+| `dashboardPort` | `4780` | Puerto del dashboard web local (solo `127.0.0.1`). `0` lo desactiva; un valor inválido (no entero, fuera de 1-65535) cae a `4780` con un warning. |
 
 ## Informe de estado
 
@@ -258,9 +259,21 @@ El archivo se escribe al arrancar el run (fail-hard: si falla, el run no inicia)
 
 Puedes desactivarlo con `planDocs: false` o cambiar la carpeta con `planDocs: "custom/planes"`. La ruta siempre es relativa al repo principal y se rechazan valores inseguros.
 
+## Dashboard web local
+
+El plugin levanta un servidor HTTP **solo en `127.0.0.1`** (nunca expuesto a la red) con el avance de las orquestaciones en vivo:
+
+- URL: **http://127.0.0.1:4780** (configurable con la opción `dashboardPort`; `0` lo desactiva).
+- Página única sin dependencias externas (CSS y JS propios, sin CDN ni bundler): run activo con progreso `X/Y`, tabla de tareas (ID, agente, estado, rama, tiempo y tokens/costo) e **historial de runs pasados plegado**.
+- Refresco automático cada **2.5 s** con `fetch('/api/state')`; el spinner (`clase pulse`, animación de 2 s) respeta `prefers-reduced-motion`.
+- Cada estado se distingue por **glifo + color + texto** (`⏳ en curso`, `✅ completada`, `❌ falló`, `⏭️ omitida`, `⚠️ sin confirmar`, `⏹️ abortada`): nunca solo por color.
+- Endpoints: `GET /` (página), `GET /api/state` (contrato versionado `DASHBOARD_STATE_VERSION = 1`) y `GET /api/health` (`{ ok, service, version, runId? }`).
+- `aiapaec_orchestrate` y `aiapaec_run_status` muestran la línea `Dashboard: http://127.0.0.1:<puerto>` cuando está activo.
+- Si el puerto está ocupado, consulta `/api/health` del ocupante: si es otra instancia viva **cede** el puerto (aviso por `console.warn`); si es un proceso huérfano **reintenta una vez**. Todo el dashboard es *best-effort*: un fallo suyo nunca rompe una orquestación.
+
 ## Limitaciones conocidas (v0.8)
 
-- El estado se consulta con `aiapaec_run_status` (o `/aiapaec` en el TUI); no hay vista en vivo por tarea dentro de la salida.
+- El estado se consulta con `aiapaec_run_status` (o `/aiapaec` en el TUI); el dashboard web local (`http://127.0.0.1:4780`) es la vista en vivo por tarea. Su estado vive en memoria del servicio, así que se reinicia con él.
 - `allowed_files` es advisory por defecto; usa `strict_scope: true` en la tarea para bloquearlo. Con `execute_bash: true` el scope no es infalible (shell puede escribir fuera); `strict_scope` deniega bash salvo que lo habilites.
 - Los worktrees requieren que la ubicación exponga `projectID` (si no, la tarea con `worktree: true` falla rápido).
 - Engram se integra vía MCP (los subagentes usan `mem_*` si están conectados).

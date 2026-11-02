@@ -198,4 +198,9 @@ export interface PluginOptions {
   runHistory?: number
   /** Si es `false`, desactiva el documento de plan; si es string, carpeta relativa destino. */
   planDocs?: boolean | string
+  /**
+   * Puerto del dashboard web local (127.0.0.1). Default `4780`.
+   * `0` desactiva el dashboard; un valor inválido cae a `4780` con warning.
+   */
+  dashboardPort?: number
 }
