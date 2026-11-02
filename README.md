@@ -261,6 +261,64 @@ El script corre en el repositorio actual (`process.cwd()`): úsalo desde el repo
 | `skills` | `true` | Si es `false`, desactiva el registro automático de skills desde `.agents/skills/`. |
 | `planDocs` | `true` | Si es `false`, desactiva el documento de plan; si es un string, cambia la carpeta destino relativa al repo. Se sanitiza: rechaza rutas absolutas, `..` y valores vacíos. |
 | `dashboardPort` | `4780` | Puerto del dashboard web local (solo `127.0.0.1`). `0` lo desactiva; un valor inválido (no entero, fuera de 1-65535) cae a `4780` con un warning. |
+| `modelProfile` | sin perfil | Perfil de modelos por defecto de toda la orquestación (`high`, `balanced`, `low`, `free` o uno de `modelProfiles`). Sin valor, cada agente usa su modelo declarado. |
+| `modelProfiles` | `{}` | Perfiles personalizados con nombre: `{ "<nombre>": { "agente": "providerID/modelID" } }`. |
+
+## Perfiles de modelos
+
+Un **perfil** es un mapa `agente → modelo` que se aplica a todo el arsenal de un run, **orquestador incluido**. Sirve para cambiar de escenario sin editar agente por agente: `high` para trabajo delicado, `free` para pruebas sin costo.
+
+Hay cuatro perfiles **built-in** que no requieren configuración (el proveedor es `opencode-go/` para todos salvo `beam-free`):
+
+| Agente | `high` | `balanced` | `low` | `free` |
+|---|---|---|---|---|
+| `orquestador` | `gemini-4-argon` | `glm-5.3` | `glm-5.3-flash` | `beam-free` |
+| `coder` | `kimi-k3.1-pro` | `kimi-k2.7-code` | `deepseek-v4.1-flash` | `beam-free` |
+| `qa` | `glm-5.3` | `glm-5.3-flash` | `mimo-v2.6-flash` | `beam-free` |
+| `explorador` | `glm-5.3` | `glm-5.3-flash` | `mimo-v2.6-flash` | `beam-free` |
+| `contexto` | `glm-5.3` | `glm-5.3-flash` | `mimo-v2.6-flash` | `beam-free` |
+| `deployer` | `deepseek-v4-pro` | `deepseek-v4.1-flash` | `mimo-v2.6-flash` | `beam-free` |
+
+**Precedencia:** `tasks[].model` (override puntual) → `perfil[agente]` → modelo declarado en el agente. Un nombre de perfil inexistente **no aborta** el plan: se avisa y se sigue con los modelos por defecto del agente.
+
+### Ejemplo en `opencode.json`
+
+```jsonc
+{
+  "plugins": [
+    {
+      "package": "C:/dev/plugin_orquestacion",
+      "options": {
+        "baseBranch": "dev",
+        "modelProfile": "balanced",
+        "modelProfiles": {
+          "barato": {
+            "orquestador": "opencode-go/glm-5.3-flash",
+            "coder": "opencode-go/deepseek-v4.1-flash",
+            "qa": "opencode-go/mimo-v2.6-flash",
+            "explorador": "opencode-go/mimo-v2.6-flash",
+            "contexto": "opencode-go/mimo-v2.6-flash",
+            "deployer": "opencode-go/mimo-v2.6-flash"
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+Con esa configuración todos los runs usan `balanced` salvo que el run pida otro perfil.
+
+### Cómo se elige el perfil
+
+- **Opción `modelProfile`**: perfil por defecto de la orquestación.
+- **Parámetro `modelProfile` de `aiapaec_orchestrate`**: override por run (gana sobre la opción).
+- **`tasks[].model`**: override de una sola tarea (gana sobre el perfil).
+
+### Efecto visible
+
+- El **orquestador** también cambia de modelo: se aplica con `agent.transform`, así que **surte efecto en sesiones nuevas**; para la sesión en curso hace falta `opencode service restart` (la sesión activa no muta).
+- El perfil se muestra como badge **`perfil: <nombre>`** en `aiapaec_run_status`, en el dashboard (junto al título del run activo y en las filas del historial) y en el frontmatter del plan `docs/plans/<runId>.md`.
 
 ## Informe de estado
 
@@ -288,6 +346,7 @@ El plugin levanta un servidor HTTP **solo en `127.0.0.1`** (nunca expuesto a la 
 - **Árbol de ejecución** (anti-ruido): cada run se pinta como un árbol indentado con conectores —**orquestador → tareas → sub-sesiones** (los subagentes de un subagente, en cascada por `parentID`)—. Cada nodo muestra su **título corto**, un chip **`agente · modelo`**, el estado (glifo + color + texto) y el tiempo. Las tareas en vuelo llevan spinner (`clase pulse`, animación de 2 s) y respetan `prefers-reduced-motion`.
 - Todo lo que hace ruido va **colapsado en `<details>`**: el objetivo completo del run, el detalle de cada tarea (ID, rama, summary), **tokens/costo** (el bloque solo existe si hay datos) y la **actividad** de la tarea en curso y del orquestador.
 - **Historial compacto**: los runs anteriores se listan como una línea `título · fecha · resultado` (por ejemplo `31 dic 00:00 · completada · 3/4`) y se despliegan para ver su árbol.
+- **Badge de perfil**: si el run corrió con un perfil de modelos (ver [Perfiles de modelos](#perfiles-de-modelos)), junto al título del run activo y en la línea del historial aparece un chip discreto `perfil: balanced`. Sin perfil el chip no se pinta: la página es idéntica a la de antes.
 - **El estado del usuario sobrevive al refresco**: el polling cada **2.5 s** (`fetch('/api/state')`) guarda qué `<details>` estaban abiertos y los reaplica tras repintar, así el historial ya no se colapsa solo.
 - **Feed de actividad en vivo**: cada tarea en curso muestra sus últimas **8 acciones reales** (`tool` + argumento principal truncado a 80 caracteres + `hace Xs`/`hace Xm`), y el nodo del orquestador tiene su propia sección plegable. Si no hay eventos se indica «sin actividad registrada». El feed vive **en RAM** (nunca persiste ni guarda salidas completas).
 - Cada estado se distingue por **glifo + color + texto** (`⏳ en curso`, `✅ completada`, `❌ falló`, `⏭️ omitida`, `⚠️ sin confirmar`, `⏹️ abortada`): nunca solo por color.

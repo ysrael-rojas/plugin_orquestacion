@@ -117,9 +117,12 @@ function renderRunCard(run: DashboardRunView, showTokens: boolean, collapsed: bo
   const title = [
     `<span class="glyph" aria-hidden="true">${escapeHtml(run.glyph)}</span>`,
     `<span class="node-title">${escapeHtml(run.title || run.objective || "(sin título)")}</span>`,
+    renderProfileBadge(run.modelProfile),
     `<span class="status-text tone-${escapeHtml(run.tone)}">${escapeHtml(run.statusText)}</span>`,
     `<span class="progress-pill">${escapeHtml(run.progressLabel)}</span>`,
-  ].join(" ")
+  ]
+    .filter(Boolean)
+    .join(" ")
 
   const body = [
     renderSpec(run),
@@ -133,7 +136,7 @@ function renderRunCard(run: DashboardRunView, showTokens: boolean, collapsed: bo
   if (collapsed) {
     return [
       `<details class="run-card tone-${escapeHtml(run.tone)}" data-state-id="run:${escapeHtml(run.runId)}">`,
-      `<summary class="run-summary">${escapeHtml(run.compact)}</summary>`,
+      `<summary class="run-summary">${escapeHtml(run.compact)}${renderProfileBadge(run.modelProfile)}</summary>`,
       body,
       "</details>",
     ].join("\n")
@@ -145,6 +148,19 @@ function renderRunCard(run: DashboardRunView, showTokens: boolean, collapsed: bo
     body,
     "</article>",
   ].join("\n")
+}
+
+/**
+ * Badge discreto del perfil de modelos (`perfil: balanced`).
+ *
+ * Presentacional y tolerante: si el run no declara perfil —o el backend va un
+ * paso por detrás y `/api/state` no trae el campo— devuelve cadena vacía y no
+ * se pinta nada (el HTML queda idéntico al de antes de los perfiles).
+ */
+function renderProfileBadge(modelProfile?: string): string {
+  const value = (modelProfile ?? "").trim()
+  if (!value) return ""
+  return `<span class="profile-badge">perfil: ${escapeHtml(value)}</span>`
 }
 
 /** Objetivo completo + metadatos del run, plegados (anti-ruido). */
@@ -415,6 +431,10 @@ export function renderClientScript(refreshMs: number = DASHBOARD_REFRESH_MS): st
     '    var cleaned = String(iso).replace("T", " ").replace("Z", "").slice(0, 19);',
     '    return cleaned || "—";',
     "  }",
+    "  function profileBadge(value) {",
+    '    var text = String(value === null || value === undefined ? "" : value).trim();',
+    '    return text ? \' <span class="profile-badge">perfil: \' + esc(text) + "</span>" : "";',
+    "  }",
     "  function activityList(items, emptyText) {",
     "    if (!items || items.length === 0) {",
     '      return \'<p class="act-empty">\' + esc(emptyText) + "</p>";',
@@ -535,6 +555,7 @@ export function renderClientScript(refreshMs: number = DASHBOARD_REFRESH_MS): st
     "  function title(run) {",
     '    return \'<span class="glyph" aria-hidden="true">\' + esc(run.glyph) + "</span> " +',
     '      \'<span class="node-title">\' + esc(run.title || run.objective || "(sin título)") + "</span> " +',
+    "      profileBadge(run.modelProfile) +",
     '      \'<span class="status-text tone-\' + esc(run.tone) + \'">\' + esc(run.statusText) + "</span> " +',
     '      \'<span class="progress-pill">\' + esc(run.progressLabel) + "</span>";',
     "  }",
@@ -550,7 +571,7 @@ export function renderClientScript(refreshMs: number = DASHBOARD_REFRESH_MS): st
     "  function historyCard(run, showTokens) {",
     "    var label = run.compact || run.objective || run.runId;",
     '    return \'<details class="run-card tone-\' + esc(run.tone) + \'" data-state-id="run:\' + esc(run.runId) + \'">\' +',
-    '      \'<summary class="run-summary">\' + esc(label) + "</summary>" +',
+    '      \'<summary class="run-summary">\' + esc(label) + profileBadge(run.modelProfile) + "</summary>" +',
     "      runBody(run, showTokens) + \"</details>\";",
     "  }",
     "  function paint(state) {",
@@ -666,6 +687,16 @@ main { max-width: 1080px; margin: 0 auto; padding: 0.75rem 1.25rem 2rem; display
   font-size: 0.72rem;
   font-variant-numeric: tabular-nums;
   color: var(--dim);
+  vertical-align: 0.05em;
+}
+.profile-badge {
+  display: inline-block;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 0.45rem;
+  font-size: 0.72rem;
+  color: var(--dim);
+  white-space: nowrap;
   vertical-align: 0.05em;
 }
 .tone-run { color: var(--run); }

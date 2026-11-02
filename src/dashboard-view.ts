@@ -138,6 +138,12 @@ export interface DashboardRunView {
   progressTotal: number
   /** "2/3", ya formateado para la cabecera. */
   progressLabel: string
+  /**
+   * Nombre del perfil de modelos con el que corrió el run (`high`, `balanced`,
+   * `low`, `free` o uno personalizado). Ausente si el run no declaró perfil o
+   * si `/api/state` viene de un backend sin perfiles.
+   */
+  modelProfile?: string
   inFlight: string[]
   tasks: DashboardTaskRow[]
   /** Actividad de la sesión orquestadora (solo el run activo la incluye). */
@@ -208,6 +214,7 @@ function toRunView(
   const total = typeof record.totalTasks === "number" && record.totalTasks >= 0 ? record.totalTasks : done
   const meta = runStatusMeta(record.status)
   const title = runTitle(record)
+  const modelProfile = runModelProfile(record)
   const rows = buildTaskRows(results, inFlight, record.status, record.runId, now, activity)
   const forest = buildSessionForest(readRunSessions(record), results, inFlight, rows)
   const tasks = rows.map((row) => {
@@ -232,6 +239,7 @@ function toRunView(
     progressDone: done,
     progressTotal: total,
     progressLabel: `${done}/${total}`,
+    ...(modelProfile ? { modelProfile } : {}),
     inFlight: inFlight.map((entry) => entry.taskId),
     tasks,
     ...(orchestrator ? { orchestrator } : {}),
@@ -388,6 +396,8 @@ const SESSION_LIST_KEYS = ["subsessions", "subSessions", "sessions", "sessionTre
 const SESSION_CHILD_KEYS = ["subsessions", "subSessions", "sessions", "children"] as const
 /** Claves del título corto. */
 const TITLE_KEYS = ["title", "shortTitle"] as const
+/** Claves donde el contrato puede colgar el nombre del perfil de modelos. */
+const PROFILE_KEYS = ["modelProfile", "modelProfileName", "profile"] as const
 
 const TASK_TITLE_MAX = 70
 const RUN_TITLE_MAX = 90
@@ -652,6 +662,34 @@ export function formatModelLabel(value: unknown): string | undefined {
 
 function readModel(result: TaskResult): string | undefined {
   return formatModelLabel((result as unknown as Record<string, unknown>).model)
+}
+
+/**
+ * Perfil de modelos del run, leído de forma tolerante.
+ *
+ * Acepta el formato que emita el backend: string (`"balanced"`) u objeto con el
+ * nombre (`{ name }`, `{ id }`, `{ profile }`). Sin dato devuelve `undefined`,
+ * así el dashboard sigue pintando estados antiguos (sin perfiles) igual que
+ * antes y no muestra badge.
+ */
+export function readModelProfile(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const text = value.trim()
+    return text || undefined
+  }
+  const record = asRecord(value)
+  if (!record) return undefined
+  const name = firstText(record, ["name", "id", "profile", "modelProfile", "label"])
+  return name || undefined
+}
+
+function runModelProfile(record: RunRecord): string | undefined {
+  const source = record as unknown as Record<string, unknown>
+  for (const key of PROFILE_KEYS) {
+    const profile = readModelProfile(source[key])
+    if (profile) return profile
+  }
+  return undefined
 }
 
 function runTitle(record: RunRecord): string {
