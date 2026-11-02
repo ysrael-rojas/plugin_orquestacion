@@ -58,6 +58,37 @@ Con el agente **orquestador** (o `/orquestar`):
 - **Feed de actividad**: el plugin escucha los eventos de sesión y guarda en RAM las últimas **8 acciones** de cada sesión registrada (la orquestadora y cada tarea hija), como `tool` + argumento principal truncado a 80 caracteres. Se ve bajo cada tarea ⏳ del dashboard (`hace 5s`), en la sección «Actividad del orquestador» y en la línea `última acción: <tool> → <summary> (hace Xs)` de `aiapaec_run_status`. Nunca guarda salidas completas, no se persiste y no puede romper el run: un evento fallido se ignora. El contrato `/api/state` está en **v3** (v2 añadió `activity`; v3 añade `qaLevel` por tarea).
 - **Memoria**: las sesiones hijas llevan `parentID` (atribución al orquestador) y Engram guarda decisiones/hallazgos.
 
+## Skills por tarea (`skills`)
+
+El orquestador declara `skills: string[]` por tarea (campo opcional del `TaskSpec`). No se
+autodetectan: es una decisión explícita y determinista que viaja en el prompt («## Skills a
+aplicar») y en el resultado (`run_status` la muestra como sufijo, p. ej. `coder · L2 · tdd`). Si la
+skill no está instalada, el subagente aplica su disciplina igualmente; un valor inválido se
+descarta sin abortar el plan.
+
+| Tipo de tarea | `skills` sugeridas | Por qué |
+|---|---|---|
+| Código nuevo o refactor | `tdd` | Prueba primero; el ciclo rojo→verde→refactor deja evidencia |
+| Bug | `diagnosing-bugs` + `tdd` | Primero reproducir y aislar la causa; luego el test que la fija |
+| QA `L1` | ninguna | Smoke: solo `pnpm test` con evidencia del comando |
+| QA `L2` | `code-review` | Validación estándar contra el spec del contrato |
+| QA `L3` | `code-review` + `research` | Forense: además contrasta supuestos con fuentes reales |
+| Diseño / arquitectura | `domain-modeling` + `codebase-design` | Modelar el dominio antes de decidir la estructura |
+
+## Política de grilling
+
+`grilling` es el motor de entrevista; `grill-me` y `grill-with-docs` son sus envoltorios. La
+elección la hace el orquestador **al planificar** y la anuncia en el plan (no la pregunta por
+defecto):
+
+| Situación | Skill | Artefactos |
+|---|---|---|
+| Decisión de arquitectura o estructural | `grill-with-docs` | `GLOSSARY.md` + ADRs en `docs/adr/` |
+| Decisión chica o acotada | `grill-me` | Conversación, sin documentos |
+
+Ambas son **human-invocables** (`disable-model-invocation: true`): el agente no las dispara por
+su cuenta, las invoca el humano cuando el plan las anuncia.
+
 ## Reglas de operación
 
 1. **Merge**: el plugin nunca mergea a `dev` ni toca `main`; el deployer prepara el PR y pide aprobación.
@@ -74,6 +105,7 @@ Con el agente **orquestador** (o `/orquestar`):
 | Validar antes de publicar | `qa` con `dependsOn` del coder, `write_files: false` |
 | Validar rápido un cambio trivial | `qa` con `qaLevel: "L1"` (solo `pnpm test`) |
 | Validación forense (APIs/eventos del SDK) | `qa` con `qaLevel: "L3"` (contrasta supuestos con los `.d.ts`) |
+| Forzar una disciplina (TDD, review) | Declarar `skills: ["tdd"]` en la tarea (ver «Skills por tarea») |
 | Preparar PR | `deployer` con `push_to_remote: true` (gate de permiso) y `human_approval_required` |
 | Cancelar algo en curso | `aiapaec_run_abort` con el `runId` |
 | Ver historial | `aiapaec_run_status` sin argumentos, o `/aiapaec` en el TUI |
