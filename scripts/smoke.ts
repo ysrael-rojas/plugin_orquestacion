@@ -7,6 +7,15 @@ import { test } from "node:test"
 
 import { buildTaskPrompt, extractReport } from "../src/contracts"
 import {
+  ACTIVITY_BUFFER_SIZE,
+  ACTIVITY_SUMMARY_MAX,
+  ActivityFeed,
+  formatTimeAgo,
+  getActivityFeed,
+  summarizeToolInput,
+  truncateSummary,
+} from "../src/activity"
+import {
   activeDashboard,
   DEFAULT_DASHBOARD_PORT,
   DASHBOARD_STATE_VERSION,
@@ -1511,4 +1520,342 @@ test("dashboard: orchestrate y run_status muestran la URL del dashboard", async 
   )
   assert.ok(!String(response.content).includes("Dashboard:"), "sin dashboard no se anuncia URL")
   await waitForRun(offline.ctx, "RUN-NODASH")
+})
+
+// ---------------------------------------------------------------------------
+// Feed de actividad en vivo (RUN-ACTIVITY)
+// ---------------------------------------------------------------------------
+
+function activitySource(now: Date) {
+  return {
+    task: (runId: string, taskId: string) =>
+      runId === "RUN-LIVE" && taskId === "T3"
+        ? [{ tool: "bash", summary: "pnpm test", at: now.getTime() - 5_000 }]
+        : [],
+    orchestrator: (runId: string) =>
+      runId === "RUN-LIVE"
+        ? [{ tool: "aiapaec_orchestrate", summary: "objetivo del run", at: now.getTime() - 120_000 }]
+        : [],
+  }
+}
+
+test("activity: extrae tool y resumen de eventos V2, ignorando sesiones no registradas", () => {
+  const feed = new ActivityFeed()
+  feed.register("ses_a", "T1", { runId: "RUN-A", taskId: "T1" })
+
+  // V2: el nombre del tool llega en input.started y el input en tool.called.
+  feed.ingest({
+    type: "session.tool.input.started",
+    created: 1_700_000_000_000,
+    data: { sessionID: "ses_a", id: "call_1", name: "read" },
+  })
+  feed.ingest({
+    type: "session.tool.called",
+    created: 1_700_000_001_000,
+    data: { sessionID: "ses_a", id: "call_1", input: { filePath: "src/tools.ts" }, executed: true },
+  })
+
+  // Sesión no registrada: se ignora.
+  feed.ingest({
+    type: "session.tool.called",
+    data: { sessionID: "ses_otra", id: "x", input: { path: "a.ts" } },
+  })
+
+  const items = feed.getActivity("ses_a")
+  assert.equal(items.length, 1)
+  assert.deepEqual(
+    items.map((item) => [item.tool, item.summary]),
+    [["read", "src/tools.ts"]],
+  )
+  assert.equal(feed.getLast("ses_a")!.tool, "read")
+  assert.deepEqual(feed.getActivity("ses_otra"), [], "una sesión no registrada no acumula nada")
+  feed.cleanup()
+})
+
+test("activity: el resumen se trunca a 80 caracteres y se colapsan espacios", () => {
+  const long = `src/${"a".repeat(200)}.ts`
+  const summary = summarizeToolInput({ filePath: long })
+  assert.equal(summary.length, ACTIVITY_SUMMARY_MAX)
+  assert.ok(summary.endsWith("…"), "el truncado se marca con elipsis")
+
+  assert.equal(summarizeToolInput({ command: "pnpm test" }), "pnpm test")
+  assert.equal(summarizeToolInput({ description: "revisar   el\nrepo" }), "revisar el repo")
+  assert.equal(truncateSummary("  a\n b  "), "a b")
+  assert.equal(summarizeToolInput({ deeper: { x: 1 } }), "", "sin argumentos de texto devuelve vacío")
+  assert.equal(summarizeToolInput(["a", "b"]), "a b")
+})
+
+test("activity: ring buffer de 8 expulsa la acción más antigua", () => {
+  const feed = new ActivityFeed()
+  feed.register("ses_r")
+
+  for (let index = 1; index <= 9; index++) {
+    feed.ingest({
+      type: "session.tool.called",
+      created: 1_700_000_000_000 + index * 1000,
+      data: { sessionID: "ses_r", id: `call_${index}`, input: { command: `cmd ${index}` } },
+    })
+  }
+
+  const items = feed.getActivity("ses_r")
+  assert.equal(items.length, ACTIVITY_BUFFER_SIZE)
+  assert.equal(items[0]!.summary, "cmd 2", "el noveno expulsa al primero")
+  assert.equal(items[items.length - 1]!.summary, "cmd 9")
+  assert.equal(items.length, 8)
+  feed.cleanup()
+})
+
+test("activity: registro por run/tarea, orquestador y desregistro", () => {
+  const feed = new ActivityFeed()
+  feed.register("ses_t1", "T1", { runId: "RUN-Z", taskId: "T1" })
+  feed.register("ses_t2", "T2", { runId: "RUN-Z", taskId: "T2" })
+  feed.register("ses_orq", "orquestador", { runId: "RUN-Z", role: "orchestrator" })
+
+  const push = (sessionID: string, id: string, input: Record<string, unknown>) =>
+    feed.ingest({
+      type: "session.tool.called",
+      created: Date.now(),
+      data: { sessionID, id, input },
+    })
+
+  push("ses_t1", "a", { command: "pnpm test" })
+  push("ses_t2", "b", { filePath: "README.md" })
+  push("ses_orq", "c", { description: "delegar tareas" })
+
+  assert.equal(feed.activityForTask("RUN-Z", "T1").length, 1)
+  assert.equal(feed.lastForTask("RUN-Z", "T1")!.summary, "pnpm test")
+  assert.equal(feed.lastForTask("RUN-Z", "T2")!.summary, "README.md")
+  assert.equal(feed.orchestratorActivity("RUN-Z").length, 1)
+  assert.deepEqual(feed.activityForTask("RUN-Z", "T9"), [])
+
+  feed.unregister("ses_t1")
+  assert.equal(feed.isRegistered("ses_t1"), false)
+  assert.equal(feed.lastForTask("RUN-Z", "T1"), undefined)
+
+  feed.unregisterRun("RUN-Z")
+  assert.equal(feed.isRegistered("ses_t2"), false)
+  assert.equal(feed.isRegistered("ses_orq"), false)
+  feed.cleanup()
+})
+
+test("activity: la suscripción es best-effort ante un evento que lanza", async () => {
+  const feed = new ActivityFeed()
+  feed.register("ses_sub", "T1", { runId: "RUN-SUB", taskId: "T1" })
+
+  const poison = {
+    type: "session.tool.called",
+    created: Date.now(),
+    data: {
+      sessionID: "ses_sub",
+      id: "poison",
+      input: {
+        get filePath(): string {
+          throw new Error("argumento roto")
+        },
+      },
+    },
+  }
+  const valid = {
+    type: "session.tool.called",
+    created: Date.now(),
+    data: { sessionID: "ses_sub", id: "ok", input: { command: "pnpm test" } },
+  }
+
+  async function* stream() {
+    yield poison
+    yield valid
+  }
+
+  await feed.subscribe({ event: { subscribe: () => stream() } })
+
+  const items = feed.getActivity("ses_sub")
+  assert.equal(items.length, 1, "el evento roto no corta el bucle")
+  assert.equal(items[0]!.summary, "pnpm test")
+
+  feed.cleanup()
+  assert.deepEqual(feed.getActivity("ses_sub"), [], "cleanup vacía los buffers")
+  assert.equal(feed.getLast("ses_sub"), undefined)
+})
+
+test("activity: formatTimeAgo en segundos, minutos y horas", () => {
+  const now = new Date("2024-01-01T00:00:10.000Z")
+  assert.equal(formatTimeAgo(now.getTime() - 500, now), "hace 0s")
+  assert.equal(formatTimeAgo(now.getTime() - 5_000, now), "hace 5s")
+  assert.equal(formatTimeAgo(now.getTime() - 59_000, now), "hace 59s")
+  assert.equal(formatTimeAgo(now.getTime() - 120_000, now), "hace 2m")
+  assert.equal(formatTimeAgo(now.getTime() - 3_600_000, now), "hace 1h")
+  assert.equal(formatTimeAgo(now.getTime() + 5_000, now), "hace 0s", "un reloj adelantado no da negativos")
+  assert.equal(formatTimeAgo(Number.NaN), "—")
+})
+
+test("dashboard v2: cada tarea en curso lleva activity y las cerradas no", () => {
+  const now = new Date("2024-01-01T00:00:10.000Z")
+  const view = buildDashboardView(dashboardRuns(), now, activitySource(now))
+
+  assert.equal(view.version, 2, "el contrato de /api/state sube a v2")
+  const running = view.active!.tasks.find((task) => task.taskId === "T3")!
+  assert.equal(running.activity!.length, 1)
+  assert.deepEqual({ ...running.activity![0] }, {
+    tool: "bash",
+    summary: "pnpm test",
+    at: now.getTime() - 5_000,
+    ago: "hace 5s",
+  })
+
+  const closed = view.active!.tasks.find((task) => task.taskId === "T1")!
+  assert.equal(closed.activity, undefined, "las tareas cerradas no llevan activity")
+
+  assert.equal(view.active!.orchestrator!.label, "orquestador")
+  assert.equal(view.active!.orchestrator!.activity.length, 1)
+  assert.equal(view.active!.orchestrator!.activity[0]!.ago, "hace 2m")
+
+  // Sin fuente de actividad (o sin eventos) va vacío, nunca null roto.
+  const empty = buildDashboardView(dashboardRuns(), now)
+  assert.deepEqual(empty.active!.tasks.find((task) => task.taskId === "T3")!.activity, [])
+  assert.deepEqual(empty.active!.orchestrator!.activity, [])
+  assert.equal(empty.history[0]!.orchestrator, undefined, "el historial no lleva orquestador")
+})
+
+test("dashboard v2: la página pinta las acciones bajo la tarea en curso y el orquestador", () => {
+  const now = new Date("2024-01-01T00:00:10.000Z")
+  const html = renderDashboardHtml(buildDashboardView(dashboardRuns(), now, activitySource(now)), {
+    refreshMs: DASHBOARD_REFRESH_MS,
+  })
+
+  assert.match(html, /class="activity-row"/)
+  assert.match(html, /act-tool">bash</)
+  assert.match(html, /hace 5s/)
+  assert.match(html, /class="orch-activity"/)
+  assert.match(html, /Actividad del orquestador/)
+
+  const noActivity = renderDashboardHtml(buildDashboardView(dashboardRuns(), now), {
+    refreshMs: DASHBOARD_REFRESH_MS,
+  })
+  assert.match(noActivity, /sin actividad registrada/, "sin eventos se muestra el aviso discreto")
+
+  const script = html.slice(html.indexOf("<script>") + "<script>".length, html.lastIndexOf("</script>"))
+  assert.ok(script.includes("activityList"), "el refresco del cliente repinta la actividad")
+  assert.doesNotThrow(() => new Function(script), "el JS embebido sigue siendo válido")
+})
+
+test("dashboard v2: /api/state expone activity por tarea y la sesión orquestadora", async () => {
+  const ctx = makeCtx()
+  await saveRun(ctx, {
+    runId: "RUN-ACT-API",
+    objective: "actividad",
+    baseBranch: "dev",
+    startedAt: new Date().toISOString(),
+    status: "running",
+    totalTasks: 1,
+    inFlight: ["A1"],
+    results: [],
+  })
+
+  const feed = getActivityFeed()
+  feed.reset()
+  feed.register("ses_orq_api", "orquestador", { runId: "RUN-ACT-API", role: "orchestrator" })
+  feed.register("ses_task_api", "A1", { runId: "RUN-ACT-API", taskId: "A1", role: "task" })
+  feed.ingest({
+    type: "session.tool.input.started",
+    data: { sessionID: "ses_task_api", id: "c1", name: "read" },
+  })
+  feed.ingest({
+    type: "session.tool.called",
+    created: Date.now(),
+    data: { sessionID: "ses_task_api", id: "c1", input: { filePath: "src/index.ts" } },
+  })
+  feed.ingest({
+    type: "session.tool.called",
+    created: Date.now(),
+    data: { sessionID: "ses_orq_api", id: "c2", input: { description: "delegar" } },
+  })
+
+  const handle = await startDashboard(ctx, 0)
+  assert.ok(handle, "el dashboard debe arrancar")
+  try {
+    const state: any = await (await fetch(`${handle!.url}/api/state`)).json()
+    assert.equal(state.version, 2)
+    assert.equal(state.active.runId, "RUN-ACT-API")
+    assert.equal(state.active.tasks[0].activity.length, 1)
+    assert.equal(state.active.tasks[0].activity[0].tool, "read")
+    assert.equal(state.active.tasks[0].activity[0].summary, "src/index.ts")
+    assert.match(state.active.tasks[0].activity[0].ago, /^hace \d+[smhd]$/)
+    assert.equal(state.active.orchestrator.label, "orquestador")
+    assert.equal(state.active.orchestrator.activity[0].summary, "delegar")
+  } finally {
+    await handle!.close()
+    feed.reset()
+  }
+})
+
+test("tools: run_status añade la última acción de cada tarea en curso", async () => {
+  const { ctx, tools } = makeToolCtx()
+  await registerTools(ctx, TOOL_SETTINGS)
+  const runStatus = tools.get("run_status")!
+
+  await saveRun(ctx, {
+    runId: "RUN-ACT-STATUS",
+    objective: "en curso",
+    baseBranch: "dev",
+    startedAt: new Date().toISOString(),
+    status: "running",
+    totalTasks: 1,
+    inFlight: ["S1"],
+    results: [],
+  })
+
+  const feed = getActivityFeed()
+  feed.reset()
+  feed.register("ses_s1", "S1", { runId: "RUN-ACT-STATUS", taskId: "S1", role: "task" })
+  feed.ingest({
+    type: "session.tool.called",
+    created: Date.now() - 5_000,
+    data: { sessionID: "ses_s1", id: "c1", name: "bash", input: { command: "pnpm test" } },
+  })
+
+  try {
+    const status = await runStatus.execute({ runId: "RUN-ACT-STATUS" })
+    assert.match(String(status.content), /última acción: bash → pnpm test \(hace \d+s\)/)
+
+    feed.reset()
+    const withoutActivity = await runStatus.execute({ runId: "RUN-ACT-STATUS" })
+    assert.ok(
+      !String(withoutActivity.content).includes("última acción"),
+      "sin actividad la línea se omite",
+    )
+  } finally {
+    feed.reset()
+  }
+})
+
+test("tools: orchestrate registra la sesión orquestadora y cada hija en el feed", async () => {
+  const { ctx, tools } = makeToolCtx({ delayMs: 120 })
+  const feed = getActivityFeed()
+  feed.reset()
+  await registerTools(ctx, TOOL_SETTINGS)
+
+  await tools.get("orchestrate")!.execute(
+    { objective: "feed", runId: "RUN-ACT-FEED", tasks: [{ id: "F1", agent: "contexto", objective: "x" }] },
+    { sessionID: "ses_orq_feed" },
+  )
+
+  assert.equal(feed.isRegistered("ses_orq_feed"), true, "la sesión orquestadora se registra al iniciar")
+
+  const started = Date.now()
+  while (!feed.isRegistered("ses_test_1") && Date.now() - started < 2000) {
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  assert.equal(feed.isRegistered("ses_test_1"), true, "la sesión hija se registra al crearse")
+
+  feed.ingest({
+    type: "session.tool.called",
+    created: Date.now(),
+    data: { sessionID: "ses_test_1", id: "c1", input: { command: "pnpm test" } },
+  })
+  assert.equal(feed.lastForTask("RUN-ACT-FEED", "F1")!.summary, "pnpm test")
+
+  await waitForRun(ctx, "RUN-ACT-FEED")
+  assert.equal(feed.isRegistered("ses_test_1"), false, "al cerrar la tarea se desregistra")
+  assert.equal(feed.isRegistered("ses_orq_feed"), false, "al cerrar el run se desregistra el orquestador")
+  feed.reset()
 })

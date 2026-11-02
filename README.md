@@ -265,15 +265,18 @@ El plugin levanta un servidor HTTP **solo en `127.0.0.1`** (nunca expuesto a la 
 
 - URL: **http://127.0.0.1:4780** (configurable con la opción `dashboardPort`; `0` lo desactiva).
 - Página única sin dependencias externas (CSS y JS propios, sin CDN ni bundler): run activo con progreso `X/Y`, tabla de tareas (ID, agente, estado, rama, tiempo y tokens/costo) e **historial de runs pasados plegado**.
-- Refresco automático cada **2.5 s** con `fetch('/api/state')`; el spinner (`clase pulse`, animación de 2 s) respeta `prefers-reduced-motion`.
+- **Feed de actividad en vivo**: bajo cada tarea ⏳ en curso se listan sus últimas **8 acciones reales** (`tool` + argumento principal truncado a 80 caracteres + `hace Xs`/`hace Xm`), y una sección plegable **«Actividad del orquestador»** muestra lo que hace la sesión que delega. Si una tarea aún no emitió eventos se indica «sin actividad registrada». El feed vive **en RAM** (nunca persiste ni guarda salidas completas) y se alimenta de los eventos `session.tool.*` del runtime, con las sesiones registradas por el runner.
+- Refresco automático cada **2.5 s** con `fetch('/api/state')`; el spinner (`clase pulse`, animación de 2 s) respeta `prefers-reduced-motion`. Cada refresco recalcula los tiempos relativos.
 - Cada estado se distingue por **glifo + color + texto** (`⏳ en curso`, `✅ completada`, `❌ falló`, `⏭️ omitida`, `⚠️ sin confirmar`, `⏹️ abortada`): nunca solo por color.
-- Endpoints: `GET /` (página), `GET /api/state` (contrato versionado `DASHBOARD_STATE_VERSION = 1`) y `GET /api/health` (`{ ok, service, version, runId? }`).
+- Endpoints: `GET /` (página), `GET /api/state` (contrato versionado **`DASHBOARD_STATE_VERSION = 2`**) y `GET /api/health` (`{ ok, service, version, runId? }`).
+- Contrato v2 de `/api/state`: igual que v1 más `active.orchestrator` (`{ label: "orquestador", activity }`) y, **solo en las tareas en vuelo**, `activity: [{ tool, summary, at, ago }]` (máximo 8, en orden cronológico). Las tareas cerradas **no** llevan la clave `activity`; sin eventos el array va vacío, nunca `null`. `at` es epoch en ms y `ago` el texto relativo ya formateado.
+- `aiapaec_run_status` añade, por cada tarea en curso, la línea `última acción: <tool> → <summary> (hace Xs)` cuando el feed tiene datos (si no, la omite).
 - `aiapaec_orchestrate` y `aiapaec_run_status` muestran la línea `Dashboard: http://127.0.0.1:<puerto>` cuando está activo.
 - Si el puerto está ocupado, consulta `/api/health` del ocupante: si es otra instancia viva **cede** el puerto (aviso por `console.warn`); si es un proceso huérfano **reintenta una vez**. Todo el dashboard es *best-effort*: un fallo suyo nunca rompe una orquestación.
 
 ## Limitaciones conocidas (v0.8)
 
-- El estado se consulta con `aiapaec_run_status` (o `/aiapaec` en el TUI); el dashboard web local (`http://127.0.0.1:4780`) es la vista en vivo por tarea. Su estado vive en memoria del servicio, así que se reinicia con él.
+- El estado se consulta con `aiapaec_run_status` (o `/aiapaec` en el TUI); el dashboard web local (`http://127.0.0.1:4780`) es la vista en vivo por tarea. Su estado y el feed de actividad viven en memoria del servicio, así que se reinician con él.
 - `allowed_files` es advisory por defecto; usa `strict_scope: true` en la tarea para bloquearlo. Con `execute_bash: true` el scope no es infalible (shell puede escribir fuera); `strict_scope` deniega bash salvo que lo habilites.
 - Los worktrees requieren que la ubicación exponga `projectID` (si no, la tarea con `worktree: true` falla rápido).
 - Engram se integra vía MCP (los subagentes usan `mem_*` si están conectados).

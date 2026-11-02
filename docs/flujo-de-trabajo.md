@@ -13,7 +13,7 @@ Cómo se usa el plugin de orquestación en el día a día (v0.8.3).
 | **`aiapaec_run_abort`** | Cancela un run (interrumpe sesiones hijas; pendientes quedan `skipped`) |
 | **`/orquestar`** | Atajo: tu petición se convierte en plan de orquestación |
 | **`/aiapaec`** | Panel TUI: runs agrupados con objetivo y estado por tarea |
-| **`http://127.0.0.1:4780`** | Dashboard web local: run activo con progreso, tabla de tareas y tokens/costo (refresco 2.5 s; `dashboardPort` configurable) |
+| **`http://127.0.0.1:4780`** | Dashboard web local: run activo con progreso, tabla de tareas, tokens/costo y **feed de actividad en vivo** (últimas 8 acciones por tarea en curso + orquestador; refresco 2.5 s; `dashboardPort` configurable) |
 | **`docs/plans/<runId>.md`** | Documento de plan vivo con contexto, tareas y avance |
 | **`gentle_engram_status`** | Diagnóstico de Engram (conectado / sin conexión / ausente) |
 
@@ -54,6 +54,7 @@ Con el agente **orquestador** (o `/orquestar`):
 - **Recuperación**: el run vive en el storage (`runs/<runId>`); si la llamada se interrumpe, `run_status` recupera el estado.
 - **Documento de plan**: cada run escribe `docs/plans/<runId>.md` con contexto, tabla de tareas y avance; se actualiza por oleada y se marca `aborted` al cancelar.
 - **Dashboard en vivo**: `http://127.0.0.1:4780` (solo loopback, opción `dashboardPort`) muestra el run activo con progreso `X/Y`, la tabla de tareas (agente, estado, rama, tiempo, tokens/costo) y el historial plegado; se refresca cada 2.5 s. `aiapaec_orchestrate` y `aiapaec_run_status` incluyen la línea `Dashboard: http://127.0.0.1:<puerto>`. Si falla, la orquestación sigue igual: es best-effort.
+- **Feed de actividad**: el plugin escucha los eventos de sesión y guarda en RAM las últimas **8 acciones** de cada sesión registrada (la orquestadora y cada tarea hija), como `tool` + argumento principal truncado a 80 caracteres. Se ve bajo cada tarea ⏳ del dashboard (`hace 5s`), en la sección «Actividad del orquestador» y en la línea `última acción: <tool> → <summary> (hace Xs)` de `aiapaec_run_status`. Nunca guarda salidas completas, no se persiste y no puede romper el run: un evento fallido se ignora. El contrato `/api/state` sube a **v2** (las tareas cerradas no llevan `activity`).
 - **Memoria**: las sesiones hijas llevan `parentID` (atribución al orquestador) y Engram guarda decisiones/hallazgos.
 
 ## Reglas de operación

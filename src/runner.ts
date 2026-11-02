@@ -33,8 +33,14 @@ export interface RunnerOptions {
   control?: RunControl
   /** Timeout por tarea en ms (0/undefined = sin límite). */
   taskTimeoutMs?: number
-  /** Se invoca al iniciar cada tarea (para mostrar tareas en curso). */
-  onTaskStart?: (info: { taskId: string; agent: string; branch: string }) => void | Promise<void>
+  /** Se invoca al iniciar cada tarea (para mostrar tareas en curso y su actividad). */
+  onTaskStart?: (info: {
+    taskId: string
+    agent: string
+    branch: string
+    /** Sesión hija ya creada (la usa el feed de actividad). */
+    sessionID?: string
+  }) => void | Promise<void>
 }
 
 export interface OrchestrationResult {
@@ -227,7 +233,12 @@ interface TaskRunOptions {
   upstream?: Array<{ taskId: string; worktreeDirectory?: string; branch?: string }>
   control?: RunControl
   taskTimeoutMs?: number
-  onTaskStart?: (info: { taskId: string; agent: string; branch: string }) => void | Promise<void>
+  onTaskStart?: (info: {
+    taskId: string
+    agent: string
+    branch: string
+    sessionID?: string
+  }) => void | Promise<void>
 }
 
 async function executeTask(
@@ -321,7 +332,7 @@ async function executeTask(
     options.control?.sessions.add(sessionID)
 
     try {
-      await options.onTaskStart?.({ taskId: task.id, agent: task.agent, branch })
+      await options.onTaskStart?.({ taskId: task.id, agent: task.agent, branch, sessionID })
     } catch {
       // El avance es informativo.
     }

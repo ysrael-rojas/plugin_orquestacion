@@ -7,10 +7,11 @@
  * para que el HTML y el JS embebido solo se encarguen de la maquetación.
  */
 
+import { formatTimeAgo, type ActivityItem, type DashboardActivitySource } from "./activity"
 import type { RunRecord, TaskResult, TaskStatus } from "./types"
 
 /** Versión del contrato de `/api/state`. Súbela si cambia la forma. */
-export const DASHBOARD_STATE_VERSION = 1
+export const DASHBOARD_STATE_VERSION = 2
 
 /** Estado de display: unión del estado de run, de tarea y el implícito "pending". */
 export type DisplayStatus = RunRecord["status"] | TaskStatus | "pending"
@@ -36,6 +37,27 @@ export interface DashboardTaskRow {
   /** Presente solo si la tarea reportó costo. */
   cost?: string
   summary: string
+  /**
+   * Últimas acciones reales de la tarea (hasta 8). Solo la llevan las tareas
+   * en vuelo; las cerradas no incluyen la clave en `/api/state`.
+   */
+  activity?: DashboardActivityRow[]
+}
+
+/** Una acción ya formateada para pintar: tool + resumen + tiempo relativo. */
+export interface DashboardActivityRow {
+  tool: string
+  summary: string
+  /** Epoch ms del evento. */
+  at: number
+  /** Tiempo relativo ya formateado ("hace 5s", "hace 2m"). */
+  ago: string
+}
+
+/** Actividad de la sesión orquestadora, con su etiqueta visible. */
+export interface DashboardOrchestratorView {
+  label: string
+  activity: DashboardActivityRow[]
 }
 
 export interface DashboardRunView {
@@ -56,6 +78,8 @@ export interface DashboardRunView {
   progressLabel: string
   inFlight: string[]
   tasks: DashboardTaskRow[]
+  /** Actividad de la sesión orquestadora (solo el run activo la incluye). */
+  orchestrator?: DashboardOrchestratorView
   error?: string
   /** true para el run en curso (el que se pinta arriba). */
   isActive: boolean
@@ -76,14 +100,23 @@ export interface DashboardState {
   }
 }
 
-/** Construye el estado de display a partir de los runs del storage. */
-export function buildDashboardView(runs: readonly RunRecord[], now: Date = new Date()): DashboardState {
+/**
+ * Construye el estado de display a partir de los runs del storage.
+ *
+ * `activity` es opcional: sin fuente (o sin datos aún) las tareas en vuelo
+ * llevan `activity: []` y el orquestador una lista vacía, nunca `null`.
+ */
+export function buildDashboardView(
+  runs: readonly RunRecord[],
+  now: Date = new Date(),
+  activity?: DashboardActivitySource,
+): DashboardState {
   const ordered = [...runs]
   const activeRecord = ordered.find((run) => run.status === "running")
-  const active = activeRecord ? toRunView(activeRecord, now, true) : null
+  const active = activeRecord ? toRunView(activeRecord, now, true, activity) : null
   const history = ordered
     .filter((run) => run !== activeRecord)
-    .map((run) => toRunView(run, now, false))
+    .map((run) => toRunView(run, now, false, activity))
 
   const views = active ? [active, ...history] : history
 
@@ -101,7 +134,12 @@ export function buildDashboardView(runs: readonly RunRecord[], now: Date = new D
   }
 }
 
-function toRunView(record: RunRecord, now: Date, isActive: boolean): DashboardRunView {
+function toRunView(
+  record: RunRecord,
+  now: Date,
+  isActive: boolean,
+  activity?: DashboardActivitySource,
+): DashboardRunView {
   const results = Array.isArray(record.results) ? record.results : []
   const inFlight = Array.isArray(record.inFlight) ? record.inFlight : []
   const done = results.length
@@ -123,7 +161,18 @@ function toRunView(record: RunRecord, now: Date, isActive: boolean): DashboardRu
     progressTotal: total,
     progressLabel: `${done}/${total}`,
     inFlight,
-    tasks: buildTaskRows(results, inFlight, record.status),
+    tasks: buildTaskRows(results, inFlight, record.status, record.runId, now, activity),
+    ...(isActive
+      ? {
+          orchestrator: {
+            label: "orquestador",
+            activity: toActivityRows(
+              safeActivity(() => activity?.orchestrator(record.runId) ?? []),
+              now,
+            ),
+          },
+        }
+      : {}),
     ...(record.error ? { error: record.error } : {}),
     isActive,
   }
@@ -133,6 +182,9 @@ function buildTaskRows(
   results: readonly TaskResult[],
   inFlight: readonly string[],
   runStatus: RunRecord["status"],
+  runId: string,
+  now: Date,
+  activity?: DashboardActivitySource,
 ): DashboardTaskRow[] {
   const rows: DashboardTaskRow[] = results.map((result) => {
     const meta = taskStatusMeta(result.status)
@@ -168,6 +220,7 @@ function buildTaskRows(
       branch: "—",
       time: "—",
       summary: "",
+      activity: toActivityRows(safeActivity(() => activity?.task(runId, taskId) ?? []), now),
     })
   }
 
@@ -183,12 +236,36 @@ function buildTaskRows(
             statusText: "sin cerrar",
             tone: "skipped" as const,
             isRunning: false,
+            activity: undefined,
           }
         : row,
     )
   }
 
   return rows
+}
+
+/** Convierte items crudos del feed en filas listas para pintar. */
+function toActivityRows(
+  items: readonly ActivityItem[],
+  now: Date,
+): DashboardActivityRow[] {
+  return items.map((item) => ({
+    tool: item.tool,
+    summary: item.summary,
+    at: item.at,
+    ago: formatTimeAgo(item.at, now),
+  }))
+}
+
+/** Lee la fuente de actividad sin permitir que un fallo rompa el dashboard. */
+function safeActivity(load: () => readonly ActivityItem[]): readonly ActivityItem[] {
+  try {
+    const items = load()
+    return Array.isArray(items) ? items : []
+  } catch {
+    return []
+  }
 }
 
 function runStatusMeta(status: RunRecord["status"]): { glyph: string; text: string; tone: DisplayTone } {
@@ -305,3 +382,10 @@ export function escapeHtml(value: unknown): string {
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;")
 }
+
+/**
+ * Reexport del formateador relativo usado por las filas de actividad
+ * ("hace 5s", "hace 2m"): la vista y `run_status` comparten formato.
+ */
+export { formatTimeAgo }
+export type { ActivityItem, DashboardActivitySource }
