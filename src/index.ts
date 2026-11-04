@@ -1,6 +1,7 @@
 import { Plugin } from "@opencode/plugin"
 
 import { AGENTS } from "./agents"
+import { getActivityFeed } from "./activity"
 import { normalizeDashboardPort, startDashboard, type DashboardHandle } from "./dashboard"
 import { detectEngram, formatEngramStatus } from "./engram"
 import { sanitizePlanDocsFolder } from "./plandocs"
@@ -11,6 +12,7 @@ import {
   ORCHESTRATOR_AGENT_ID,
   profileModel,
   resolveModelProfiles,
+  resolveTaskTimeout,
   splitModelRef,
 } from "./types"
 import type { PluginCtx, PluginOptions } from "./types"
@@ -40,10 +42,9 @@ export default Plugin.define({
 
     const cleanupSessions = options.cleanupSessions === true
     const cleanupWorktrees = options.cleanupWorktrees === true
-    const taskTimeoutMs =
-      typeof options.taskTimeoutMs === "number" && options.taskTimeoutMs > 0
-        ? options.taskTimeoutMs
-        : undefined
+    const taskTimeout = resolveTaskTimeout(options.taskTimeoutMs)
+    if (taskTimeout.warning) console.warn(taskTimeout.warning)
+    const taskTimeoutMs = taskTimeout.timeoutMs
     const worktreeParent =
       typeof options.worktreeParent === "string" && options.worktreeParent.trim()
         ? options.worktreeParent.trim()
@@ -169,6 +170,13 @@ export default Plugin.define({
     }
 
     return async () => {
+      try {
+        // El feed es un singleton con una suscripción al stream de eventos:
+        // sin cleanup, cada recarga del plugin deja la anterior viva.
+        getActivityFeed().cleanup()
+      } catch {
+        // sin acción: el plugin se está descargando
+      }
       try {
         await dashboard?.close()
       } catch {

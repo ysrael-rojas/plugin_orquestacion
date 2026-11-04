@@ -60,6 +60,8 @@ Layout single-context: `GLOSSARY.md` + `docs/adr/` en la raíz, creados de forma
 
 ## Operación y gotchas
 
+- **Los modelos de los agentes deben ser IDs reales**, no nombres visibles: `nan/GLM-5.3-Flash` (display) no existe; el ID es `nan/glm5.3-flash`. Compruébalo con `opencode models`. Un modelo inválido crea la sesión hija y la cierra al instante: antes se veía como `unconfirmed` sin causa; ahora la tarea falla con "sin ningún mensaje del assistant".
+- `taskTimeoutMs` tiene default de **20 min** (`0` lo desactiva). Antes no había límite y una tarea colgada congelaba la oleada. El avance se persiste **por tarea**, no al cerrar la oleada.
 - `mem_save` puede fallar con "could not resolve an authoritative OpenCode runtime session" cuando el servicio lleva mucho uptime o hubo recargas de plugins: ejecutar `opencode service restart` y probar en una sesión nueva (ver `docs/incidencias.md`).
 - Si un cambio en `src/` no surte efecto en OpenCode, reiniciar el servicio (`opencode service restart`).
 - `.engram/config.json` fija el proyecto de memoria en `plugin_orquestacion`; no cambiar `project_name` (historial unificado).

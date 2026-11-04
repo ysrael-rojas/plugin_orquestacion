@@ -49,12 +49,14 @@ import { registerSkills } from "../src/skills"
 import type { PluginCtx, RunRecord, TaskSpec } from "../src/types"
 import {
   BUILT_IN_MODEL_PROFILES,
+  DEFAULT_TASK_TIMEOUT_MS,
   MODEL_PROFILE_PROVIDER,
   SHORT_TITLE_MAX,
   inFlightEntries,
   modelLabel,
   profileModel,
   resolveModelProfiles,
+  resolveTaskTimeout,
   shortTitle,
   splitModelRef,
   toInFlightTask,
@@ -81,7 +83,7 @@ import {
   portWarning,
 } from "../scripts/abrir-dashboard.mjs"
 
-function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string[] } = {}): PluginCtx {
+function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string[]; empty?: string[] } = {}): PluginCtx {
   let counter = 0
   const created: any[] = []
   const prompts: Array<{ taskId: string; text: string }> = []
@@ -131,6 +133,8 @@ function makeCtx(options: { fail?: string[]; delayMs?: number; noReport?: string
         const taskId = session.input?.metadata?.taskId ?? "?"
         const shouldFail = (options.fail ?? []).includes(taskId)
         const shouldSkipReport = (options.noReport ?? []).includes(taskId)
+        // Sesión que muere sin mensaje del assistant (modelo inexistente).
+        if ((options.empty ?? []).includes(taskId)) return []
         const text = shouldSkipReport
           ? "No pude completar la tarea (sin reporte estructurado)."
           : shouldFail
@@ -701,6 +705,62 @@ test("sin reporte JSON → unconfirmed (no éxito)", async () => {
     keepSessions: true,
   })
   assert.equal(run.results[0]!.status, "unconfirmed")
+})
+
+test("sesión sin mensaje del assistant → failed con causa (modelo inexistente)", async () => {
+  const ctx = makeCtx({ empty: ["E1"] })
+  const run = await runOrchestration({
+    ctx,
+    runId: "RUN-EMPTY",
+    input: { objective: "empty", tasks: [{ id: "E1", agent: "contexto", objective: "x" }] },
+    baseBranch: "dev",
+    workdir: "C:/repo",
+    keepSessions: true,
+  })
+
+  const result = run.results[0]!
+  assert.equal(result.status, "failed", "sin mensaje no es 'sin confirmar': es un fallo")
+  assert.match(result.error ?? "", /sin ningún mensaje del assistant/)
+  assert.match(result.error ?? "", /providerID\/modelID/, "la causa debe apuntar al modelo del agente")
+})
+
+test("runner: persiste el avance por tarea, no solo al cerrar la oleada", async () => {
+  const ctx = makeCtx()
+  const writes: number[] = []
+
+  await runOrchestration({
+    ctx,
+    runId: "RUN-INCR",
+    input: {
+      objective: "incremental",
+      tasks: [
+        { id: "I1", agent: "contexto", objective: "x" },
+        { id: "I2", agent: "contexto", objective: "y" },
+      ],
+    },
+    baseBranch: "dev",
+    workdir: "C:/repo",
+    keepSessions: true,
+    onUpdate: ({ results }) => {
+      writes.push(results.length)
+    },
+  })
+
+  assert.deepEqual(writes, [1, 2], "una escritura por tarea cerrada, con el avance acumulado")
+})
+
+test("taskTimeoutMs: default 20 min, 0 lo desactiva y un valor inválido avisa", () => {
+  assert.deepEqual(resolveTaskTimeout(undefined), { timeoutMs: DEFAULT_TASK_TIMEOUT_MS })
+  assert.equal(DEFAULT_TASK_TIMEOUT_MS, 20 * 60_000)
+
+  assert.deepEqual(resolveTaskTimeout(0), { timeoutMs: undefined }, "0 = sin límite")
+  assert.deepEqual(resolveTaskTimeout(1500), { timeoutMs: 1500 })
+
+  for (const invalid of [-1, Number.NaN, Number.POSITIVE_INFINITY, "3000", {}, true]) {
+    const resolved = resolveTaskTimeout(invalid as any)
+    assert.equal(resolved.timeoutMs, DEFAULT_TASK_TIMEOUT_MS, `valor inválido ${JSON.stringify(invalid)} cae al default`)
+    assert.match(resolved.warning ?? "", /taskTimeoutMs .* no es válido/)
+  }
 })
 
 test("extractReport: toma el último bloque JSON (el reporte, no el contrato)", () => {
