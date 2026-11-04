@@ -88,7 +88,52 @@ defecto):
 | Decisión chica o acotada | `grill-me` | Conversación, sin documentos |
 
 Ambas son **human-invocables** (`disable-model-invocation: true`): el agente no las dispara por
-su cuenta, las invoca el humano cuando el plan las anuncia.
+su cuenta, las invoca el humano cuando el plan las anuncia. Ver «Cadena de skills» para lo que
+ocurre después.
+
+## Cadena de skills (spec → tickets → implementación)
+
+Las skills de ingeniería de Matt Pocock se encadenan. Todas son explícitas
+(`disable-model-invocation: true`): cada paso es un punto de control humano, el agente no las
+dispara solo. Lo que asumen (tracker y docs de dominio) está en `docs/agents/` y lo genera una
+vez `setup-matt-pocock-skills`.
+
+| Paso | Skill | Qué produce |
+|---|---|---|
+| 1 | `grill-with-docs` | Plan afilado + términos en `GLOSSARY.md` y ADRs en `docs/adr/` |
+| 2 | `to-spec` | `.scratch/<feature>/spec.md` (problema, solución, historias, decisiones) |
+| 3 | `to-tickets` | `.scratch/<feature>/issues/NN-slug.md`: un tracer-bullet por ticket con `Blocked by:` |
+| 4 | `implement-spec` | Implementación del grafo de tickets |
+| 5 | `retro` | Retrospectiva sobre el entorno del agente (usa `writing-for-agents`) |
+
+Cada ticket es una rebanada **vertical**: corta todas las capas y se puede demostrar sola. La
+línea `Blocked by:` es lo que convierte la lista de tickets en un grafo con frontera.
+
+### `implement-spec` sobre `aiapaec_orchestrate`
+
+El `SKILL.md` upstream habla de rama de integración, worktrees y subagentes sueltos. Aquí se
+traduce al runner, que ya resuelve exactamente eso:
+
+| Upstream (`implement-spec`) | Aquí |
+|---|---|
+| Un *implementer subagent* por ticket | Una tarea `coder` con `worktree: true` |
+| `Blocked by:` del ticket | `dependsOn` con los IDs de esas tareas |
+| Frontera del grafo | Lo que el runner lanza en cada oleada |
+| Rama de integración | `baseBranch` (por defecto `dev`) |
+| Merge del ticket a la integración | Gate de permiso humano |
+| `code-review` al cerrar | Tarea `qa` con `skills: ["code-review"]` |
+
+Ejemplo con dos tickets independientes y uno que los bloquea:
+
+```jsonc
+tasks: [
+  { id: "T1", agent: "coder", worktree: true, title: "…", objective: "issues/01-…" },
+  { id: "T2", agent: "coder", worktree: true, title: "…", objective: "issues/02-…" },
+  { id: "T3", agent: "coder", worktree: true, title: "…", objective: "issues/03-…", dependsOn: ["T1", "T2"] }
+]
+```
+
+Nunca se lanzan subagentes sueltos: se pierden el run, el dashboard y `aiapaec_run_status`.
 
 ## Reglas de operación
 
