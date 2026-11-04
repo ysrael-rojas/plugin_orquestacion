@@ -1047,7 +1047,7 @@ test("tools: runHistory se conecta de extremo a extremo", async () => {
   assert.equal(runs[1]!.runId, "RUN-E2E-1")
 })
 
-test("skills: registra las 9 skills del catálogo .agents/skills/", async () => {
+test("skills: registra las 16 skills del catálogo .agents/skills/", async () => {
   const ctx = makeCtx()
   const added: any[] = []
   ;(ctx as any).skill = {
@@ -1069,8 +1069,15 @@ test("skills: registra las 9 skills del catálogo .agents/skills/", async () => 
     "grill-me",
     "grill-with-docs",
     "grilling",
+    "implement-spec",
     "research",
+    "retro",
+    "setup-matt-pocock-skills",
     "tdd",
+    "to-spec",
+    "to-tickets",
+    "triage",
+    "writing-for-agents",
   ])
 
   const grilling = added.find((skill) => skill.id === "grilling")
@@ -1096,10 +1103,33 @@ test("skills: registra las 9 skills del catálogo .agents/skills/", async () => 
 
   const grillWithDocs = added.find((skill) => skill.id === "grill-with-docs")!
   assert.equal(grillWithDocs.autoinvoke, false, "grill-with-docs declara disable-model-invocation:true")
-  assert.equal(
-    added.filter((skill) => skill.autoinvoke === false).length,
-    2,
-    "solo grill-me y grill-with-docs están restringidas a invocación explícita",
+
+  // Cadena de workflow de Matt Pocock: grill-with-docs -> to-spec -> to-tickets
+  // -> implement-spec -> retro, más el setup, son puntos de control manual.
+  // writing-for-agents es un documento de referencia autoinvocable.
+  const explicitSkills = [
+    "grill-me",
+    "grill-with-docs",
+    "to-spec",
+    "to-tickets",
+    "implement-spec",
+    "retro",
+    "triage",
+    "setup-matt-pocock-skills",
+  ]
+  assert.deepEqual(
+    added
+      .filter((skill) => skill.autoinvoke === false)
+      .map((skill) => skill.id)
+      .sort(),
+    [...explicitSkills].sort(),
+    "solo esas skills están restringidas a invocación explícita",
+  )
+  const writingForAgents = added.find((skill) => skill.id === "writing-for-agents")!
+  assert.ok(!("autoinvoke" in writingForAgents), "writing-for-agents no declara disable-model-invocation")
+  assert.ok(
+    writingForAgents.content.includes("SKILL-MECHANICS.md"),
+    "writing-for-agents referencia su documento de soporte",
   )
   assert.ok(
     added.every((skill) => typeof skill.content === "string" && skill.content.length > 0),
@@ -1114,6 +1144,29 @@ test("skills: registra las 9 skills del catálogo .agents/skills/", async () => 
       true,
       `tdd debe conservar ${supportFile}`,
     )
+  }
+
+  // El setup y writing-for-agents no tienen cuerpo propio suficiente: sus
+  // documentos de soporte son parte del contrato (tracker, triage, mecánica).
+  const supportBySkill: Record<string, string[]> = {
+    "setup-matt-pocock-skills": [
+      "domain.md",
+      "issue-tracker-github.md",
+      "issue-tracker-gitlab.md",
+      "issue-tracker-local.md",
+      "triage-labels.md",
+    ],
+    "writing-for-agents": ["SKILL-MECHANICS.md"],
+    triage: ["AGENT-BRIEF.md", "OUT-OF-SCOPE.md"],
+  }
+  for (const [skillId, files] of Object.entries(supportBySkill)) {
+    for (const supportFile of files) {
+      assert.equal(
+        fs.existsSync(path.join(process.cwd(), ".agents", "skills", skillId, supportFile)),
+        true,
+        `${skillId} debe conservar ${supportFile}`,
+      )
+    }
   }
 
   const notices = fs.readFileSync(path.join(process.cwd(), ".agents", "skills", "THIRD-PARTY-NOTICES.md"), "utf8")

@@ -2,13 +2,28 @@
 
 Plugin TypeScript ESM para OpenCode V2 (arquitectura "Aiapaec"). OpenCode carga `src/index.ts` directamente: **no hay build de producción** y `tsconfig` solo cubre `src/`.
 
+## Agent skills
+
+### Issue tracker
+
+Las specs y los tickets viven como markdown local en `.scratch/<feature>/` (no GitHub Issues). Ver `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Vocabulario por defecto (rol = valor): el estado va en `Status:` y la categoría en `Category:` del ticket. Ver `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Layout single-context: `GLOSSARY.md` + `docs/adr/` en la raíz, creados de forma perezosa por `domain-modeling`. Ver `docs/agents/domain.md`.
+
 ## Comandos
 
-- `pnpm test` — lint (Biome) + typecheck + bundle de pruebas con esbuild + `node --test` (80 pruebas, ~3 s). No necesita OpenCode corriendo.
+- `pnpm test` — lint (Biome) + typecheck + bundle de pruebas con esbuild + `node --test` (92 pruebas, ~4 s). No necesita OpenCode corriendo.
 - `pnpm run lint` — solo Biome (`biome.json`; `noExplicitAny`, `noNonNullAssertion` y `useOptionalChain` desactivadas por estilo del repo).
 - `pnpm run typecheck` — solo `tsc --noEmit` (no cubre `scripts/`).
 - `pnpm run agents:sync` — regenera `config/agents.json` desde `src/agents.ts`.
 - `pnpm run agents:install` — además fusiona los agentes en `~/.config/opencode/opencode.json` (o `$OPENCODE_CONFIG`).
+- `pnpm run skills:lock` — regenera `skills-lock.json` tras re-copiar skills del upstream (lock v1 del CLI `vercel-labs/skills`; ver `THIRD-PARTY-NOTICES.md`).
 - Una sola prueba (bundlear y filtrar):
   ```powershell
   pnpm exec esbuild scripts/smoke.ts --bundle --platform=node --format=esm --outfile=.tmp/smoke.mjs; node --test --test-name-pattern "runner" .tmp/smoke.mjs
@@ -20,7 +35,9 @@ Plugin TypeScript ESM para OpenCode V2 (arquitectura "Aiapaec"). OpenCode carga 
 - `src/index.ts` es el único entrypoint (`Plugin.define`, id `plugin-de-orquestacion-para-opencode`). Registra los namespaces `aiapaec` (orquestación) y `gentle` (solo `engram_status`), el comando `/engram-status`, y las skills del catálogo `.agents/skills/` vía `ctx.skill.transform` -> `SkillEditor.add`.
 - Flujo: `aiapaec_orchestrate` inicia un run en segundo plano y devuelve `runId`; `runner.ts` ejecuta oleadas (por `dependsOn`) con `Promise.allSettled`; cada tarea crea una sesión hija con `parentID`; el avance se persiste en `ctx.storage` (`runs/<runId>`) y se consulta con `aiapaec_run_status`.
 - Los agentes **no se pueden crear desde el plugin** (la API V2 no lo permite): viven en `opencode.json` → `agents`. `config/agents.json` es **generado** desde `src/agents.ts`; no editarlo a mano.
-- **Catálogo de skills**: la fuente única de verdad está en `.agents/skills/` (hoy **9 skills** vendorizadas de `mattpocock/skills`: `tdd`, `code-review`, `diagnosing-bugs`, `research`, `domain-modeling`, `codebase-design`, `grill-with-docs`, `grilling` y `grill-me`). Cada subdirectorio es el ID de la skill y contiene un `SKILL.md` con frontmatter (`name`, `description`, `disable-model-invocation`) más los documentos de soporte que ese `SKILL.md` referencia y un `agents/openai.yaml` (metadata upstream que el plugin no lee). Al cargar el plugin se registran automáticamente; `disable-model-invocation: true` se traduce a `autoinvoke: false` (solo invocable explícitamente: `grill-me` y `grill-with-docs`). Se puede desactivar con la opción `skills: false`.
+- **Catálogo de skills**: la fuente única de verdad está en `.agents/skills/` (hoy **16 skills** vendorizadas de `mattpocock/skills`: `tdd`, `code-review`, `diagnosing-bugs`, `research`, `domain-modeling`, `codebase-design`, `grill-with-docs`, `to-spec`, `to-tickets`, `implement-spec`, `retro`, `triage`, `setup-matt-pocock-skills`, `grilling`, `grill-me` y `writing-for-agents`). Cada subdirectorio es el ID de la skill y contiene un `SKILL.md` con frontmatter (`name`, `description`, `disable-model-invocation`) más los documentos de soporte que ese `SKILL.md` referencia y un `agents/openai.yaml` (metadata upstream que el plugin no lee). Al cargar el plugin se registran automáticamente; `disable-model-invocation: true` se traduce a `autoinvoke: false` (solo invocable explícitamente: `grill-me`, `grill-with-docs`, `to-spec`, `to-tickets`, `implement-spec`, `retro`, `triage` y `setup-matt-pocock-skills`). Se puede desactivar con la opción `skills: false`.
+- **Cadena de workflow (skills de ingeniería)**: `grill-with-docs` → `to-spec` → `to-tickets` → `implement-spec` → `retro`. Todas son explícitas: son puntos de control humanos, el agente no las dispara solo. `grill-with-docs` es un router (`grilling` + `domain-modeling`); `retro` depende de `writing-for-agents`. `to-spec`, `to-tickets` e `implement-spec` asumen un tracker configurado por `setup-matt-pocock-skills` (una vez por repo): escribe `docs/agents/issue-tracker.md`, el vocabulario de triage y el layout de docs de dominio. Sin esa configuración esas tres skills se detienen pidiendo ejecutar el setup.
+- **`implement-spec` se traduce a `aiapaec_orchestrate`**: el SKILL.md upstream describe rama de integración, un worktree por ticket, frontera del grafo y `code-review` final — el mismo problema que resuelve el runner. Al ejecutarlo aquí, las aristas de bloqueo de cada ticket son `dependsOn`, cada ticket es una tarea con `worktree: true`, el merge a la rama de integración lo aprueba el humano y la validación final es una tarea `qa` con `skills: ["code-review"]`. No se lanzan subagentes sueltos: se pierde el run, el dashboard y `aiapaec_run_status`.
 - **Procedencia de las skills**: son copias literales de `https://github.com/mattpocock/skills` (MIT, © 2026 Matt Pocock) al commit `4ae2317` (2026-10-31), aplanadas desde `skills/engineering/` y `skills/productivity/`. No se editan a mano: se re-copian del upstream. Licencia, commit y mapeo de frontmatter → `autoinvoke` en `.agents/skills/THIRD-PARTY-NOTICES.md`.
 - Si cambias el nombre de una herramienta, actualiza también sus referencias en los prompts de `src/agents.ts` y regenera con `pnpm run agents:sync`.
 - Tareas con `worktree: true` corren en un **git worktree aislado** (`<padre>/worktrees/<runId>-<taskId>`): la sesión hija usa `location.directory` = worktree y los dependientes reciben esa ruta en el prompt. `cleanupWorktrees` borra los de tareas exitosas; los fallidos se conservan.
