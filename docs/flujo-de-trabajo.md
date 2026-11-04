@@ -50,7 +50,7 @@ Con el agente **orquestador** (o `/orquestar`):
 
 - **Aislamiento**: cada tarea con `worktree: true` corre en su propio git worktree (carpeta + rama), permitiendo varios coder en paralelo.
 - **Scope real**: `strict_scope` bloquea ediciones fuera de `allowed_files`; `forbidden_files`, `write_files`, `bash` y `git commit` son reglas `deny` reales.
-- **Validación**: sin reporte JSON con `status`, la tarea queda `unconfirmed` (⚠️) y sus dependientes no corren.
+- **Validación**: sin reporte JSON con `status`, la tarea queda `unconfirmed` (⚠️) y sus dependientes no corren. Si la sesión termina **sin mensaje o sin texto** del assistant (p. ej. modelo del agente inexistente), la tarea se marca `failed` con la causa, y el avance se persiste **por tarea**: una tarea colgada ya no borra el progreso de sus hermanas.
 - **Niveles de QA**: cada tarea acepta `qaLevel` con tres profundidades —`L1` smoke (solo `pnpm test` con evidencia del comando), `L2` estándar (validación contra el spec con comando + salida y `archivo:línea` en las desviaciones) y `L3` forense (L2 + supuestos técnicos contrastados con fuentes reales, como los `.d.ts` del SDK)—. Default `L2`; un valor inválido cae a `L2` con aviso en la respuesta de `aiapaec_orchestrate`. La definición operativa llega en el prompt solo a las tareas de agente `qa`; el nivel efectivo aparece como `qa · L2` en `aiapaec_run_status` y como badge junto al agente en el dashboard.
 - **Recuperación**: el run vive en el storage (`runs/<runId>`); si la llamada se interrumpe, `run_status` recupera el estado.
 - **Documento de plan**: cada run escribe `docs/plans/<runId>.md` con contexto, título corto del run en el frontmatter, tabla de tareas (ID, agente, estado, rama, dependencias y **Título**) y avance; se actualiza por oleada y se marca `aborted` al cancelar.
@@ -139,7 +139,7 @@ Nunca se lanzan subagentes sueltos: se pierden el run, el dashboard y `aiapaec_r
 
 1. **Merge**: el plugin nunca mergea a `dev` ni toca `main`; el deployer prepara el PR y pide aprobación.
 2. **`mem_save` falla con "authoritative session"**: `opencode service restart` y sesión nueva (ver `docs/incidencias.md`).
-3. **Opciones**: `baseBranch` (dev), `taskTimeoutMs`, `runHistory` (50), `cleanupSessions`, `cleanupWorktrees`, `worktreeParent`, `dashboardPort` (4780; `0` desactiva el dashboard), `modelProfiles` y `modelProfile` (ver «Perfiles de modelos»).
+3. **Opciones**: `baseBranch` (dev), `taskTimeoutMs` (20 min; `0` lo desactiva), `runHistory` (50), `cleanupSessions`, `cleanupWorktrees`, `worktreeParent`, `dashboardPort` (4780; `0` desactiva el dashboard), `modelProfiles` y `modelProfile` (ver «Perfiles de modelos»).
 
 ## Perfiles de modelos
 

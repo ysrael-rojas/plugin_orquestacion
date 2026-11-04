@@ -507,6 +507,38 @@ export const SHORT_TITLE_MAX = 60
 export const DEFAULT_MODEL_LABEL = "default"
 
 /**
+ * Timeout por defecto de una tarea: 20 minutos.
+ *
+ * Sin default, una tarea colgada (un subagente esperando algo que no llega)
+ * bloquea la oleada para siempre. `taskTimeoutMs: 0` lo desactiva a propósito.
+ */
+export const DEFAULT_TASK_TIMEOUT_MS = 20 * 60_000
+
+/**
+ * Resuelve la opción `taskTimeoutMs` del plugin.
+ *
+ * - número finito > 0 → ese valor en ms (redondeado)
+ * - `0` → sin límite (`undefined`)
+ * - ausente → `DEFAULT_TASK_TIMEOUT_MS`
+ * - cualquier otro valor (negativo, `NaN`, string, …) → default + aviso
+ */
+export function resolveTaskTimeout(raw: unknown): { timeoutMs?: number; warning?: string } {
+  if (raw === undefined || raw === null) return { timeoutMs: DEFAULT_TASK_TIMEOUT_MS }
+
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    if (raw === 0) return { timeoutMs: undefined }
+    if (raw > 0) return { timeoutMs: Math.floor(raw) }
+  }
+
+  return {
+    timeoutMs: DEFAULT_TASK_TIMEOUT_MS,
+    warning:
+      `[plugin-orquestacion] taskTimeoutMs ${JSON.stringify(raw)} no es válido ` +
+      `(usa milisegundos > 0, o 0 para desactivarlo); se usa ${DEFAULT_TASK_TIMEOUT_MS} ms.`,
+  }
+}
+
+/**
  * Título corto para un nodo del árbol: primera línea, espacios colapsados y
  * truncado a `max` caracteres (con elipsis).
  *

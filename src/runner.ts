@@ -149,9 +149,30 @@ export async function runOrchestration(options: RunnerOptions): Promise<Orchestr
       runnable.push(task)
     }
 
+    // Persistencia incremental: cada tarea se escribe en cuanto termina. Antes
+    // se persistía solo al cerrar la oleada, así que una tarea colgada dejaba
+    // sin guardar el avance de sus hermanas ya exitosas.
+    const waveResults: Array<TaskResult | undefined> = []
+    let persistChain: Promise<void> = Promise.resolve()
+
+    const persist = (): void => {
+      if (!options.onUpdate) return
+      const snapshot = [
+        ...results,
+        ...waveResults.filter((entry): entry is TaskResult => entry !== undefined),
+      ]
+      // Serializado: dos tareas pueden cerrar a la vez.
+      persistChain = persistChain.then(() =>
+        Promise.resolve(options.onUpdate?.({ results: snapshot })).then(
+          () => undefined,
+          () => undefined, // el avance es informativo: nunca rompe el run
+        ),
+      )
+    }
+
     const settled = await Promise.allSettled(
-      runnable.map((task) =>
-        executeTask(ctx, task, {
+      runnable.map(async (task, index) => {
+        const result = await executeTask(ctx, task, {
           runId,
           runObjective: input.objective,
           baseBranch,
@@ -171,33 +192,36 @@ export async function runOrchestration(options: RunnerOptions): Promise<Orchestr
               worktreeDirectory: entry.worktreeDirectory,
               branch: entry.branch,
             })),
-        }),
-      ),
+        })
+
+        waveResults[index] = result
+        persist()
+        return result
+      }),
     )
 
     settled.forEach((outcome, index) => {
+      // `executeTask` no lanza: devuelve siempre un TaskResult. Este camino es
+      // la red de seguridad para un fallo inesperado fuera de su try/catch.
+      if (outcome.status === "fulfilled") return
       const task = runnable[index]!
-      const result: TaskResult =
-        outcome.status === "fulfilled"
-          ? outcome.value
-          : {
-              taskId: task.id,
-              agent: task.agent,
-              status: "failed",
-              error: String(outcome.reason ?? "Error desconocido"),
-            }
-      results.push(result)
-      byId.set(result.taskId, result)
-      if (result.worktreeDirectory) {
-        createdWorktrees.set(result.taskId, result.worktreeDirectory)
+      waveResults[index] = {
+        taskId: task.id,
+        agent: task.agent,
+        status: "failed",
+        error: String(outcome.reason ?? "Error desconocido"),
       }
+      persist()
     })
 
-    if (options.onUpdate) {
-      try {
-        await options.onUpdate({ results: [...results] })
-      } catch {
-        // El avance es informativo; no debe romper la orquestación.
+    await persistChain
+
+    for (const entry of waveResults) {
+      if (!entry) continue
+      results.push(entry)
+      byId.set(entry.taskId, entry)
+      if (entry.worktreeDirectory) {
+        createdWorktrees.set(entry.taskId, entry.worktreeDirectory)
       }
     }
   }
@@ -394,6 +418,21 @@ async function executeTask(
         typeof message.error === "string"
           ? message.error
           : JSON.stringify(message.error),
+      )
+    }
+
+    // Una sesión que termina sin mensaje (o sin texto) del assistant no es un
+    // "reporte ausente": es un fallo silencioso. El caso típico es un modelo de
+    // agente inexistente, que crea la sesión y la cierra de inmediato.
+    if (!message) {
+      throw new Error(
+        "La sesión hija terminó sin ningún mensaje del assistant: revisa que el modelo del agente exista " +
+          "(formato `providerID/modelID`) y que el agente esté registrado.",
+      )
+    }
+    if (!text.trim()) {
+      throw new Error(
+        "La sesión hija terminó sin texto del assistant (posible modelo inválido, sin cuota o interrumpida).",
       )
     }
 

@@ -214,6 +214,8 @@ El subagente debe cerrar con un reporte JSON (contrato B):
 
 Si el subagente no devuelve un reporte JSON con `status`, la tarea queda en estado **`unconfirmed`** (⚠️) con el texto como resumen: no se cuenta como éxito y sus dependientes se omiten. Si el reporte declara un `status` distinto de `success`, la tarea se marca como fallida. El reporte se toma del **último** bloque ```json de la respuesta (el contrato de entrada no se confunde con el reporte).
 
+Una sesión que termina **sin mensaje o sin texto del assistant** (el caso típico es un modelo de agente inexistente, que crea la sesión y la cierra de inmediato) ya no queda `unconfirmed`: se marca **`failed`** con la causa en el error. `unconfirmed` queda reservado para cuando hubo respuesta pero sin reporte.
+
 ## Permisos
 
 - `permissions.write_files: false` → regla `deny` real sobre `edit`.
@@ -256,7 +258,7 @@ El script corre en el repositorio actual (`process.cwd()`): úsalo desde el repo
 | `cleanupSessions` | `false` | Si es `true`, elimina las sesiones hijas al terminar (por defecto se conservan para inspección). |
 | `cleanupWorktrees` | `false` | Si es `true`, elimina los worktrees de tareas exitosas al terminar el run (los fallidos se conservan). |
 | `worktreeParent` | `<padre del repo>/worktrees` | Directorio padre donde se crean los worktrees. |
-| `taskTimeoutMs` | sin límite | Timeout por tarea en milisegundos; al vencer se interrumpe la sesión hija y la tarea falla. |
+| `taskTimeoutMs` | `1200000` (20 min) | Timeout por tarea en milisegundos; al vencer se interrumpe la sesión hija y la tarea falla con `Timeout de tarea`. `0` desactiva el límite; un valor inválido cae al default con un warning. |
 | `runHistory` | `50` | Cuántos runs se conservan en el historial. Si el valor es inválido (no entero o ≤ 0) se usa `50`. |
 | `skills` | `true` | Si es `false`, desactiva el registro automático de skills desde `.agents/skills/`. |
 | `planDocs` | `true` | Si es `false`, desactiva el documento de plan; si es un string, cambia la carpeta destino relativa al repo. Se sanitiza: rechaza rutas absolutas, `..` y valores vacíos. |
